@@ -1,0 +1,28 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TubePilot.Worker", "TubePilot.Worker\TubePilot.Worker.csproj", "{8E045A31-D42C-4F01-8E78-D29CD7CB06FD}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TubePilot.Core", "TubePilot.Core\TubePilot.Core.csproj", "{668641B7-B141-438A-9C47-503544B6FC2E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TubePilot.Infrastructure", "TubePilot.Infrastructure\TubePilot.Infrastructure.csproj", "{64ABF1A6-3687-4292-A501-F3F0DB27E9B7}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{8E045A31-D42C-4F01-8E78-D29CD7CB06FD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8E045A31-D42C-4F01-8E78-D29CD7CB06FD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8E045A31-D42C-4F01-8E78-D29CD7CB06FD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8E045A31-D42C-4F01-8E78-D29CD7CB06FD}.Release|Any CPU.Build.0 = Release|Any CPU
+		{668641B7-B141-438A-9C47-503544B6FC2E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{668641B7-B141-438A-9C47-503544B6FC2E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{668641B7-B141-438A-9C47-503544B6FC2E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{668641B7-B141-438A-9C47-503544B6FC2E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{64ABF1A6-3687-4292-A501-F3F0DB27E9B7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{64ABF1A6-3687-4292-A501-F3F0DB27E9B7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{64ABF1A6-3687-4292-A501-F3F0DB27E9B7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{64ABF1A6-3687-4292-A501-F3F0DB27E9B7}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
