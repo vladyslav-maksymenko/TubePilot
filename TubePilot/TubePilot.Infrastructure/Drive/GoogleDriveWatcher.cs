@@ -20,8 +20,10 @@ internal sealed class GoogleDriveWatcher : IDriveWatcher
     {
         _logger = logger;
         _knownFilesStore = knownFilesStore;
-        Directory.CreateDirectory(options.DownloadDirectory);
-        _logger.LogInformation($"GoogleDriveWatcher initialized. Files will be saved to: {Path.GetFullPath(options.DownloadDirectory)}");
+        
+        var absolutePath = Path.GetFullPath(options.DownloadDirectory);
+        _logger.LogInformation($"GoogleDriveWatcher initialized. Default output directory: {absolutePath}");
+        
         _driveService = CreateDriveService(options);
     }
 
@@ -63,6 +65,7 @@ internal sealed class GoogleDriveWatcher : IDriveWatcher
     public async Task<string> DownloadAsync(string fileId, string fileName, string destinationDir, CancellationToken ct = default)
     {
         var safeFileName = FileNameSanitizer.Sanitize(fileName);
+        Directory.CreateDirectory(destinationDir);
         var localPath = Path.Combine(destinationDir, safeFileName);
 
         if (File.Exists(localPath))
@@ -75,31 +78,46 @@ internal sealed class GoogleDriveWatcher : IDriveWatcher
         _logger.LogInformation($"Downloading {safeFileName} ({fileId})...");
 
         var downloadRequest = _driveService.Files.Get(fileId);
-        await using var outputStream = File.Create(localPath);
-
-        downloadRequest.MediaDownloader.ProgressChanged += progress =>
+        
+        try
         {
-            if (progress.Status == Google.Apis.Download.DownloadStatus.Completed)
+            await using (var outputStream = File.Create(localPath))
             {
-                _logger.LogInformation($"Download complete: {safeFileName}");
-            }
-            else if (progress.Status == Google.Apis.Download.DownloadStatus.Failed)
-            {
-                _logger.LogError($"Download failed: {safeFileName}");
-            }
-        };
+                downloadRequest.MediaDownloader.ProgressChanged += progress =>
+                {
+                    if (progress.Status == Google.Apis.Download.DownloadStatus.Completed)
+                    {
+                        _logger.LogInformation($"Download complete: {safeFileName}");
+                    }
+                    else if (progress.Status == Google.Apis.Download.DownloadStatus.Failed)
+                    {
+                        _logger.LogError($"Download failed: {safeFileName}");
+                    }
+                };
 
-        var result = await downloadRequest.DownloadAsync(outputStream, ct);
+                var result = await downloadRequest.DownloadAsync(outputStream, ct);
 
-        if (result.Status == Google.Apis.Download.DownloadStatus.Failed)
-        {
-            throw new IOException($"Failed to download file {safeFileName}: {result.Exception?.Message}");
+                if (result.Status == Google.Apis.Download.DownloadStatus.Failed)
+                {
+                    throw new IOException($"Failed to download file {safeFileName}: {result.Exception?.Message}");
+                }
+            }
+            _knownFilesStore.Add(fileId);
+            _logger.LogInformation($"Saved to {localPath}");
+            
+            return localPath;
         }
-        
-        _knownFilesStore.Add(fileId);
-        _logger.LogInformation($"Saved to {localPath}");
-        
-        return localPath;
+        catch (Exception ex)
+        {
+            _logger.LogWarning($"Download aborted. Cleaning up corrupted file {localPath}");
+            
+            // Якщо обірвався інтернет або Google кинув помилку - видаляємо "битий" файл 0 байт.
+            if (File.Exists(localPath))
+            {
+                File.Delete(localPath);
+            }
+            throw;
+        }
     }
 
     private static DriveService CreateDriveService(DriveOptions options)

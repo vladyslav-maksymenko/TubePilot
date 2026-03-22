@@ -38,13 +38,20 @@ public class Worker(
                     var newFiles = await driveWatcher.GetNewFilesAsync(folderId, stoppingToken);
                     foreach(var file in newFiles)
                     {
-                        var downloadedPath = await driveWatcher.DownloadAsync(file.Id, file.Name, destinationDir, stoppingToken);
-                        logger.LogInformation("Successfully processed {FileName} to {Path}", file.Name, downloadedPath);
+                        try
+                        {
+                            var downloadedPath = await driveWatcher.DownloadAsync(file.Id, file.Name, destinationDir, stoppingToken);
+                            logger.LogInformation("Successfully processed {FileName} to {Path}", file.Name, downloadedPath);
+                        }
+                        catch (Exception innerEx)
+                        {
+                            logger.LogError(innerEx, "Failed to download file {FileName} ({FileId}). Skipping.", file.Name, file.Id);
+                        }
                     }
                 }
                 catch (Exception ex)
                 {
-                    logger.LogError(ex, "Error while polling or downloading from Google Drive.");
+                    logger.LogError(ex, "Critical error while polling Google Drive API.");
                 }
             }
             
