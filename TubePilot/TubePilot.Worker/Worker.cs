@@ -7,6 +7,7 @@ namespace TubePilot.Worker;
 public class Worker(
     ILogger<Worker> logger, 
     IDriveWatcher driveWatcher, 
+    ITelegramBotService telegramBot,
     IOptionsMonitor<DriveOptions> optionsMonitor) : BackgroundService
 {
     private bool _hasWarnedAboutMissingFolderId;
@@ -42,6 +43,8 @@ public class Worker(
                         {
                             var downloadedPath = await driveWatcher.DownloadAsync(file.Id, file.Name, destinationDir, stoppingToken);
                             logger.LogInformation("Successfully processed {FileName} to {Path}", file.Name, downloadedPath);
+                            
+                            await telegramBot.NotifyNewVideoAsync(file, downloadedPath, stoppingToken);
                         }
                         catch (Exception innerEx)
                         {
