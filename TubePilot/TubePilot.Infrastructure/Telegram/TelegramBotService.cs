@@ -162,7 +162,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             await File.WriteAllTextAsync(SubscriberFile, chatId.ToString(), ct);
             
             var text = "✅ <b>Авторизація успішна!</b>\n\nТепер я буду надсилати сюди інтерфейс для обробки кожного нового відео, яке потрапляє на Google Drive 🛸";
-            await _botClient.SendMessage(chatId, text, ParseMode.Html, cancellationToken: ct);
+            await _botClient.SendMessage(chatId, text, parseMode: ParseMode.Html, cancellationToken: ct);
             
             _logger.LogInformation("Successfully linked bot to user ChatId: {ChatId}", chatId);
         }
@@ -214,7 +214,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 await _botClient.EditMessageText(
                     chatId, msgId,
                     $"⚙️ <b>GPU ОБРОБКА: АКТИВНО</b>\n\n<blockquote>👤 <code>{state.FileName}</code></blockquote>\n\n📊 <code>[░░░░░░░░░░] 0%</code>\n🔄 <i>Ініціалізація FFmpeg Engine...</i>",
-                    ParseMode.Html, cancellationToken: ct);
+                    parseMode: ParseMode.Html, cancellationToken: ct);
                 var job = RunProcessingJobAsync(chatId, msgId, state, ct);
                 _activeJobs[msgId] = job;
                 _ = job.ContinueWith(_ => _activeJobs.TryRemove(msgId, out _!), TaskScheduler.Default);
@@ -251,14 +251,14 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
                 if (text == lastText) return;
                 lastText = text;
-                await _botClient.EditMessageText(chatId, msgId, text, ParseMode.Html, cancellationToken: ct);
+                await _botClient.EditMessageText(chatId, msgId, text, parseMode: ParseMode.Html, cancellationToken: ct);
             }, ct);
 
             var finalTxt = $"✅ <b>УНІКАЛІЗАЦІЮ ЗАВЕРШЕНО</b>\n\n" +
                            $"<blockquote>👤 <code>{state.FileName}</code>\n" +
                            $"⚡ Фільтрів застосовано: {state.SelectedOptions.Count}</blockquote>";
                            
-            await _botClient.EditMessageText(chatId, msgId, finalTxt, ParseMode.Html, cancellationToken: ct);
+            await _botClient.EditMessageText(chatId, msgId, finalTxt, parseMode: ParseMode.Html, cancellationToken: ct);
 
             foreach (var res in results)
             {
@@ -270,13 +270,13 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 var copyButton = new InlineKeyboardMarkup(
                     [[InlineKeyboardButton.WithCopyText("📋 СКОПІЮВАТИ ПОСИЛАННЯ", url)]]);
                 
-                await _botClient.SendMessage(chatId, msgText, ParseMode.Html, replyMarkup: copyButton, cancellationToken: ct);
+                await _botClient.SendMessage(chatId, msgText, parseMode: ParseMode.Html, replyMarkup: copyButton, cancellationToken: ct);
             }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Pipeline failed for {FileName}.", state.FileName);
-            await _botClient.EditMessageText(chatId, msgId, $"❌ <b>CRITICAL FAILURE</b>\n\n<pre>{ex.Message}</pre>", ParseMode.Html, cancellationToken: ct);
+            await _botClient.EditMessageText(chatId, msgId, $"❌ <b>CRITICAL FAILURE</b>\n\n<pre>{ex.Message}</pre>", parseMode: ParseMode.Html, cancellationToken: ct);
         }
     }
 
