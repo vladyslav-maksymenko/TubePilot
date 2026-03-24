@@ -236,9 +236,10 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         try
         {
             var lastUpdate = DateTime.MinValue;
+            var lastText = string.Empty;
             var results = await _videoProcessor.ProcessAsync(state.LocalPath, state.SelectedOptions, async pct =>
             {
-                if ((DateTime.UtcNow - lastUpdate).TotalSeconds < 2 && pct != 100)
+                if ((DateTime.UtcNow - lastUpdate).TotalSeconds < 2 && pct < 100)
                 {
                     return;
                 }
@@ -247,7 +248,9 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 var filled = pct / 10;
                 var bar = new string('█', filled) + new string('░', 10 - filled);
                 var text = $"⚙️ <b>GPU ОБРОБКА: В ПРОЦЕСІ</b>\n\n<blockquote>👤 <code>{state.FileName}</code></blockquote>\n\n📊 <code>[{bar}] {pct}%</code>\n🔄 <i>Render Engine (FFmpeg)...</i>";
-                
+
+                if (text == lastText) return;
+                lastText = text;
                 await _botClient.EditMessageText(chatId, msgId, text, ParseMode.Html, cancellationToken: ct);
             }, ct);
 
