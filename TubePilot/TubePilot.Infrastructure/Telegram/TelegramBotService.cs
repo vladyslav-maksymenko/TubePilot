@@ -266,7 +266,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 var baseUrl = _telegramOptions.CurrentValue.BaseUrl.TrimEnd('/');
                 var url = $"{baseUrl}/play/{Uri.EscapeDataString(fileName)}";
 
-                var msgText = $"🎬 <b>ГОТОВИЙ ФАЙЛ:</b>\n<code>{fileName}</code>";
+                var msgText = $"🎬 <b>ГОТОВИЙ ФАЙЛ:</b>\n<code>{fileName}</code>\n\n▶️ <a href=\"{url}\">ДИВИТИСЬ РЕЗУЛЬТАТ</a>";
                 var copyButton = new InlineKeyboardMarkup(
                     [[InlineKeyboardButton.WithCopyText("📋 СКОПІЮВАТИ ПОСИЛАННЯ", url)]]);
                 
