@@ -236,11 +236,11 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 var fileName = Path.GetFileName(res);
                 var url = $"http://localhost:5000/play/{Uri.EscapeDataString(fileName)}";
                 
-                // В майбутньому тут можна додати кнопку публікації на YouTube
-                var linkMarkup = new InlineKeyboardMarkup(InlineKeyboardButton.WithUrl("▶️ ДИВИТИСЬ РЕЗУЛЬТАТ", url));
-                var msgText = $"🎬 <b>ГОТОВИЙ ФАЙЛ:</b>\n<code>{fileName}</code>\n\nНатисни знизу для перегляду з власного сервера!";
+                // Телеграм API забороняє вставляти 'localhost' в Inline-кнопки (помилка 400: Wrong HTTP URL), 
+                // тому відправляємо як звичайний текст-посилання:
+                var msgText = $"🎬 <b>ГОТОВИЙ ФАЙЛ:</b>\n<code>{fileName}</code>\n\n▶️ <a href=\"{url}\">ДИВИТИСЬ РЕЗУЛЬТАТ</a>\n🌐 <code>{url}</code>";
                 
-                await _botClient.SendTextMessageAsync(chatId, msgText, ParseMode.Html, replyMarkup: linkMarkup, cancellationToken: ct);
+                await _botClient.SendMessage(chatId, msgText, ParseMode.Html, cancellationToken: ct);
             }
         }
         catch (Exception ex)
