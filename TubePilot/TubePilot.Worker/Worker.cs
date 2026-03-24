@@ -58,7 +58,7 @@ public class Worker(
                 }
             }
             
-            await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
+            await Task.Delay(TimeSpan.FromSeconds(options.PollingIntervalSeconds), stoppingToken);
         }
     }
 }

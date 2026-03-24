@@ -1,10 +1,10 @@
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
-using Microsoft.Extensions.Hosting;
-using System.IO;
 using TubePilot.Infrastructure;
+using TubePilot.Infrastructure.Drive.Options;
 
 namespace TubePilot.Worker;
 
@@ -21,17 +21,22 @@ public static class Program
 
         var app = builder.Build();
 
-        // Створюємо папку для віддачі відео (Telegram-бот даватиме на неї посилання)
-        var processedDir = Path.Combine(builder.Environment.ContentRootPath, "processed");
+        var driveOptions = builder.Configuration.GetSection(DriveOptions.SectionName).Get<DriveOptions>() ?? new DriveOptions();
+        var processedDir = Path.GetFullPath(driveOptions.ProcessedDirectory);
         Directory.CreateDirectory(processedDir);
+
+        var contentTypeProvider = new FileExtensionContentTypeProvider();
+        contentTypeProvider.Mappings[".mp4"] = "video/mp4";
+        contentTypeProvider.Mappings[".webm"] = "video/webm";
+        contentTypeProvider.Mappings[".mkv"] = "video/x-matroska";
+        contentTypeProvider.Mappings[".avi"] = "video/x-msvideo";
+        contentTypeProvider.Mappings[".mov"] = "video/quicktime";
 
         app.UseStaticFiles(new StaticFileOptions
         {
             FileProvider = new PhysicalFileProvider(processedDir),
             RequestPath = "/play",
-            // Дозволяємо браузеру програвати mp4
-            ServeUnknownFileTypes = true,
-            DefaultContentType = "video/mp4"
+            ContentTypeProvider = contentTypeProvider
         });
         
         app.Run();

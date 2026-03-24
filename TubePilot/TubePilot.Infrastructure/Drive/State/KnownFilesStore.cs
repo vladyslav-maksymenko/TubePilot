@@ -43,7 +43,7 @@ internal sealed class KnownFilesStore(ILogger<KnownFilesStore> logger) : IKnownF
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, $"Failed to load known files from {LocalStateFileName}");
+            logger.LogError(ex, "Failed to load known files from {FileName}", LocalStateFileName);
         }
     }
 
@@ -51,12 +51,12 @@ internal sealed class KnownFilesStore(ILogger<KnownFilesStore> logger) : IKnownF
     {
         try
         {
-            var json = JsonSerializer.Serialize(_processedIds);
+            var json = JsonSerializer.Serialize(_processedIds.OrderBy(x => x).ToArray());
             File.WriteAllText(LocalStateFileName, json);
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, $"Failed to save known files to {LocalStateFileName}");
+            logger.LogError(ex, "Failed to save known files to {FileName}", LocalStateFileName);
         }
     }
 

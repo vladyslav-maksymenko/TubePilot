@@ -3,16 +3,22 @@ namespace TubePilot.Core.Utils;
 public static class FileNameSanitizer
 {
     /// <summary>
-    /// Очищає ім'я файлу від проблемних символів (пробіли, лапки, дужки).
-    /// Це необхідно, оскільки такі символи можуть зламати виконання команд у FFmpeg під час нарізання відео.
+    /// Очищає ім'я файлу від проблемних символів (системні + FFmpeg-специфічні).
     /// </summary>
     public static string Sanitize(string filename)
     {
-        var invalidChars = new[] { '"', '\'', '`', '(', ')', '[', ']', '{', '}' };
-        foreach (var ch in invalidChars)
+        foreach (var ch in Path.GetInvalidFileNameChars())
         {
             filename = filename.Replace(ch.ToString(), "");
         }
+        
+        // FFmpeg-специфічні символи, які ламають CLI-команди
+        var ffmpegUnsafe = new[] { '"', '\'', '`', '(', ')', '[', ']', '{', '}' };
+        foreach (var ch in ffmpegUnsafe)
+        {
+            filename = filename.Replace(ch.ToString(), "");
+        }
+
         filename = filename.Replace(" ", "_");
         while (filename.Contains("__"))
         {

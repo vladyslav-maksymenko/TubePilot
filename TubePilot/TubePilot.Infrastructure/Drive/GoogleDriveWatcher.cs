@@ -2,6 +2,7 @@ using Google.Apis.Auth.OAuth2;
 using Google.Apis.Drive.v3;
 using Google.Apis.Services;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using TubePilot.Core.Contracts;
 using TubePilot.Core.Domain;
 using TubePilot.Core.Utils;
@@ -16,20 +17,21 @@ internal sealed class GoogleDriveWatcher : IDriveWatcher
     private readonly IKnownFilesStore _knownFilesStore;
     private readonly ILogger<GoogleDriveWatcher> _logger;
 
-    public GoogleDriveWatcher(DriveOptions options, IKnownFilesStore knownFilesStore, ILogger<GoogleDriveWatcher> logger)
+    public GoogleDriveWatcher(IOptions<DriveOptions> options, IKnownFilesStore knownFilesStore, ILogger<GoogleDriveWatcher> logger)
     {
         _logger = logger;
         _knownFilesStore = knownFilesStore;
+
+        var opts = options.Value;
+        var absolutePath = Path.GetFullPath(opts.DownloadDirectory);
+        _logger.LogInformation("GoogleDriveWatcher initialized. Default output directory: {OutputDir}", absolutePath);
         
-        var absolutePath = Path.GetFullPath(options.DownloadDirectory);
-        _logger.LogInformation($"GoogleDriveWatcher initialized. Default output directory: {absolutePath}");
-        
-        _driveService = CreateDriveService(options);
+        _driveService = CreateDriveService(opts);
     }
 
     public async Task<IReadOnlyList<DriveFile>> GetNewFilesAsync(string folderId, CancellationToken ct = default)
     {
-        _logger.LogDebug($"Polling Drive folder {folderId}");
+        _logger.LogDebug("Polling Drive folder {FolderId}", folderId);
         
         var request = _driveService.Files.List();
         request.Q = $"'{folderId}' in parents and mimeType contains 'video/' and trashed = false";
@@ -40,7 +42,7 @@ internal sealed class GoogleDriveWatcher : IDriveWatcher
 
         if (response.Files is null || response.Files.Count == 0)
         {
-            _logger.LogDebug($"No files found in folder {folderId}");
+            _logger.LogDebug("No files found in folder {FolderId}", folderId);
             return [];
         }
         
@@ -57,7 +59,7 @@ internal sealed class GoogleDriveWatcher : IDriveWatcher
             })
             .ToArray();
 
-        _logger.LogInformation($"Found {newFiles.Count()} new file(s) in folder {folderId}");
+        _logger.LogInformation("Found {Count} new file(s) in folder {FolderId}", newFiles.Length, folderId);
 
         return newFiles;
     }
@@ -70,12 +72,12 @@ internal sealed class GoogleDriveWatcher : IDriveWatcher
 
         if (File.Exists(localPath))
         {
-            _logger.LogWarning($"File {safeFileName} already exists locally, marking as processed");
+            _logger.LogWarning("File {FileName} already exists locally, marking as processed", safeFileName);
             _knownFilesStore.Add(fileId);
             return localPath;
         }
 
-        _logger.LogInformation($"Downloading {safeFileName} ({fileId})...");
+        _logger.LogInformation("Downloading {FileName} ({FileId})...", safeFileName, fileId);
 
         var downloadRequest = _driveService.Files.Get(fileId);
         
@@ -87,11 +89,11 @@ internal sealed class GoogleDriveWatcher : IDriveWatcher
                 {
                     if (progress.Status == Google.Apis.Download.DownloadStatus.Completed)
                     {
-                        _logger.LogInformation($"Download complete: {safeFileName}");
+                        _logger.LogInformation("Download complete: {FileName}", safeFileName);
                     }
                     else if (progress.Status == Google.Apis.Download.DownloadStatus.Failed)
                     {
-                        _logger.LogError($"Download failed: {safeFileName}");
+                        _logger.LogError("Download failed: {FileName}", safeFileName);
                     }
                 };
 
@@ -103,15 +105,14 @@ internal sealed class GoogleDriveWatcher : IDriveWatcher
                 }
             }
             _knownFilesStore.Add(fileId);
-            _logger.LogInformation($"Saved to {localPath}");
+            _logger.LogInformation("Saved to {LocalPath}", localPath);
             
             return localPath;
         }
-        catch (Exception ex)
+        catch
         {
-            _logger.LogWarning($"Download aborted. Cleaning up corrupted file {localPath}");
+            _logger.LogWarning("Download aborted. Cleaning up corrupted file {LocalPath}", localPath);
             
-            // Якщо обірвався інтернет або Google кинув помилку - видаляємо "битий" файл 0 байт.
             if (File.Exists(localPath))
             {
                 File.Delete(localPath);

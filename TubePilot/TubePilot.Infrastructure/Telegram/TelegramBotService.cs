@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -18,9 +19,11 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     private readonly ITelegramBotClient _botClient;
     private readonly IVideoProcessor _videoProcessor;
     private readonly ILogger<TelegramBotService> _logger;
+    private readonly IOptionsMonitor<TelegramOptions> _telegramOptions;
     private const string SubscriberFile = "telegram_subscriber.txt";
 
-    private readonly Dictionary<int, VideoProcessingState> _userSelections = [];
+    private readonly ConcurrentDictionary<int, VideoProcessingState> _userSelections = [];
+    private readonly ConcurrentDictionary<int, Task> _activeJobs = [];
 
     private static readonly Dictionary<string, string> OptionLabels = new()
     {
@@ -40,6 +43,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     {
         _videoProcessor = videoProcessor;
         _logger = logger;
+        _telegramOptions = options;
         
         var token = options.CurrentValue.BotToken;
         if (string.IsNullOrWhiteSpace(token))
@@ -58,7 +62,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         _botClient.StartReceiving(HandleUpdateAsync, HandleErrorAsync, receiverOptions, stoppingToken);
 
         var me = await _botClient.GetMe(stoppingToken);
-        _logger.LogInformation($"[Telegram] Bot @{me.Username} is listening for interactions...");
+        _logger.LogInformation("[Telegram] Bot @{Username} is listening for interactions...", me.Username);
 
         await Task.Delay(-1, stoppingToken);
     }
@@ -136,17 +140,31 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         }
     }
 
+    private bool IsAuthorized(long chatId)
+    {
+        var allowed = _telegramOptions.CurrentValue.AllowedChatId;
+        return allowed is null || allowed == chatId;
+    }
+
     private async Task ProcessMessageAsync(Message message, CancellationToken ct)
     {
         if (message.Text == "/start")
         {
             var chatId = message.Chat.Id;
+
+            if (!IsAuthorized(chatId))
+            {
+                _logger.LogWarning("Unauthorized /start from ChatId: {ChatId}", chatId);
+                await _botClient.SendMessage(chatId, "⛔ Доступ заборонено.", cancellationToken: ct);
+                return;
+            }
+
             await File.WriteAllTextAsync(SubscriberFile, chatId.ToString(), ct);
             
             var text = "✅ <b>Авторизація успішна!</b>\n\nТепер я буду надсилати сюди інтерфейс для обробки кожного нового відео, яке потрапляє на Google Drive 🛸";
             await _botClient.SendMessage(chatId, text, ParseMode.Html, cancellationToken: ct);
             
-            _logger.LogInformation($"Successfully linked bot to user ChatId: {chatId}");
+            _logger.LogInformation("Successfully linked bot to user ChatId: {ChatId}", chatId);
         }
     }
 
@@ -155,6 +173,12 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         var msgId = query.Message?.MessageId ?? 0;
         var chatId = query.Message?.Chat.Id ?? 0;
         var data = query.Data ?? "";
+
+        if (!IsAuthorized(chatId))
+        {
+            await _botClient.AnswerCallbackQuery(query.Id, "⛔ Доступ заборонено.", showAlert: true, cancellationToken: ct);
+            return;
+        }
 
         if (!_userSelections.TryGetValue(msgId, out var state))
         {
@@ -191,7 +215,9 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                     chatId, msgId,
                     $"⚙️ <b>GPU ОБРОБКА: АКТИВНО</b>\n\n<blockquote>👤 <code>{state.FileName}</code></blockquote>\n\n📊 <code>[░░░░░░░░░░] 0%</code>\n🔄 <i>Ініціалізація FFmpeg Engine...</i>",
                     ParseMode.Html, cancellationToken: ct);
-                _ = Task.Run(() => RunProcessingJobAsync(chatId, msgId, state, ct), ct);
+                var job = RunProcessingJobAsync(chatId, msgId, state, ct);
+                _activeJobs[msgId] = job;
+                _ = job.ContinueWith(_ => _activeJobs.TryRemove(msgId, out _!), TaskScheduler.Default);
                 break;
             default:
                 updateKeyboard = false;
@@ -210,7 +236,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         try
         {
             var lastUpdate = DateTime.MinValue;
-            var results = await _videoProcessor.ProcessAsync(state.LocalPath, state.SelectedOptions, pct =>
+            var results = await _videoProcessor.ProcessAsync(state.LocalPath, state.SelectedOptions, async pct =>
             {
                 if ((DateTime.UtcNow - lastUpdate).TotalSeconds < 2 && pct != 100)
                 {
@@ -222,7 +248,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 var bar = new string('█', filled) + new string('░', 10 - filled);
                 var text = $"⚙️ <b>GPU ОБРОБКА: В ПРОЦЕСІ</b>\n\n<blockquote>👤 <code>{state.FileName}</code></blockquote>\n\n📊 <code>[{bar}] {pct}%</code>\n🔄 <i>Render Engine (FFmpeg)...</i>";
                 
-                _botClient.EditMessageText(chatId, msgId, text, ParseMode.Html, cancellationToken: ct).Wait(ct);
+                await _botClient.EditMessageText(chatId, msgId, text, ParseMode.Html, cancellationToken: ct);
             }, ct);
 
             var finalTxt = $"✅ <b>УНІКАЛІЗАЦІЮ ЗАВЕРШЕНО</b>\n\n" +
@@ -233,22 +259,37 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
             foreach (var res in results)
             {
-                var fileName = Path.GetFileName(res);
-                var url = $"http://localhost:5000/play/{Uri.EscapeDataString(fileName)}";
+                var fileName = Path.GetFileName(res) ?? res;
+                var baseUrl = _telegramOptions.CurrentValue.BaseUrl.TrimEnd('/');
+                var url = $"{baseUrl}/play/{Uri.EscapeDataString(fileName)}";
+
+                var msgText = $"🎬 <b>ГОТОВИЙ ФАЙЛ:</b>\n<code>{fileName}</code>";
+                var copyButton = new InlineKeyboardMarkup(
+                    [[InlineKeyboardButton.WithCopyText("📋 СКОПІЮВАТИ ПОСИЛАННЯ", url)]]);
                 
-                // Телеграм API забороняє вставляти 'localhost' в Inline-кнопки (помилка 400: Wrong HTTP URL), 
-                // тому відправляємо як звичайний текст-посилання:
-                var msgText = $"🎬 <b>ГОТОВИЙ ФАЙЛ:</b>\n<code>{fileName}</code>\n\n▶️ <a href=\"{url}\">ДИВИТИСЬ РЕЗУЛЬТАТ</a>\n🌐 <code>{url}</code>";
-                
-                await _botClient.SendMessage(chatId, msgText, ParseMode.Html, cancellationToken: ct);
+                await _botClient.SendMessage(chatId, msgText, ParseMode.Html, replyMarkup: copyButton, cancellationToken: ct);
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Pipeline failed.");
+            _logger.LogError(ex, "Pipeline failed for {FileName}.", state.FileName);
             await _botClient.EditMessageText(chatId, msgId, $"❌ <b>CRITICAL FAILURE</b>\n\n<pre>{ex.Message}</pre>", ParseMode.Html, cancellationToken: ct);
         }
     }
 
-    private Task HandleErrorAsync(ITelegramBotClient client, Exception ex, CancellationToken ct) => Task.CompletedTask;
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        if (!_activeJobs.IsEmpty)
+        {
+            _logger.LogInformation("Waiting for {Count} active processing job(s) to complete...", _activeJobs.Count);
+            await Task.WhenAll(_activeJobs.Values);
+        }
+        await base.StopAsync(cancellationToken);
+    }
+
+    private Task HandleErrorAsync(ITelegramBotClient client, Exception ex, CancellationToken ct)
+    {
+        _logger.LogError(ex, "Telegram polling error");
+        return Task.CompletedTask;
+    }
 }
