@@ -24,6 +24,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
     private readonly ConcurrentDictionary<int, VideoProcessingState> _userSelections = [];
     private readonly ConcurrentDictionary<int, Task> _activeJobs = [];
+    private readonly Tunnel.CloudflareTunnelManager _tunnel = new();
 
     private static readonly Dictionary<string, string> OptionLabels = new()
     {
@@ -60,6 +61,8 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         var receiverOptions = new ReceiverOptions { AllowedUpdates = [UpdateType.Message, UpdateType.CallbackQuery] };
 
         _botClient.StartReceiving(HandleUpdateAsync, HandleErrorAsync, receiverOptions, stoppingToken);
+
+        await _tunnel.StartAsync(5000, _logger, stoppingToken);
 
         var me = await _botClient.GetMe(stoppingToken);
         _logger.LogInformation("[Telegram] Bot @{Username} is listening for interactions...", me.Username);
@@ -263,13 +266,13 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             foreach (var res in results)
             {
                 var fileName = Path.GetFileName(res) ?? res;
-                var baseUrl = _telegramOptions.CurrentValue.BaseUrl.TrimEnd('/');
+                var baseUrl = (_tunnel.PublicUrl ?? _telegramOptions.CurrentValue.BaseUrl).TrimEnd('/');
                 var url = $"{baseUrl}/play/{Uri.EscapeDataString(fileName)}";
 
-                var msgText = $"\ud83c\udfac <b>ГОТОВИЙ ФАЙЛ:</b>\n<code>{EscapeHtml(fileName)}</code>";
+                var msgText = $"🎬 <b>ГОТОВИЙ ФАЙЛ:</b>\n<code>{EscapeHtml(fileName)}</code>\n\n▶️ <a href=\"{url}\">ДИВИТИСЬ РЕЗУЛЬТАТ</a>";
                 var buttons = new InlineKeyboardMarkup([
-                    [InlineKeyboardButton.WithUrl("\u25b6\ufe0f ДИВИТИСЬ РЕЗУЛЬТАТ", url)],
-                    [InlineKeyboardButton.WithCopyText("\ud83d\udccb СКОПІЮВАТИ ПОСИЛАННЯ", url)]
+                    [InlineKeyboardButton.WithUrl("▶️ ДИВИТИСЬ РЕЗУЛЬТАТ", url)],
+                    [InlineKeyboardButton.WithCopyText("📋 СКОПІЮВАТИ ПОСИЛАННЯ", url)]
                 ]);
                 
                 await _botClient.SendMessage(chatId, msgText, parseMode: ParseMode.Html, replyMarkup: buttons, cancellationToken: ct);
@@ -289,6 +292,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             _logger.LogInformation("Waiting for {Count} active processing job(s) to complete...", _activeJobs.Count);
             await Task.WhenAll(_activeJobs.Values);
         }
+        await _tunnel.DisposeAsync();
         await base.StopAsync(cancellationToken);
     }
 
