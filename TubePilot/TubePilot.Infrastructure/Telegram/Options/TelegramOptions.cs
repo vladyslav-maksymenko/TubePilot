@@ -9,4 +9,10 @@ public sealed record TelegramOptions
     public string BaseUrl { get; init; } = "http://localhost:5000";
 
     public long? AllowedChatId { get; init; }
+
+    public int MaxConcurrentJobs { get; init; } = 1;
+
+    public bool DevCommandsEnabled { get; init; } = false;
+
+    public int DevSimulatedProcessingSeconds { get; init; } = 30;
 }
