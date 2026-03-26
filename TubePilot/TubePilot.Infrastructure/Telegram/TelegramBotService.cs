@@ -266,17 +266,19 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 var baseUrl = _telegramOptions.CurrentValue.BaseUrl.TrimEnd('/');
                 var url = $"{baseUrl}/play/{Uri.EscapeDataString(fileName)}";
 
-                var msgText = $"🎬 <b>ГОТОВИЙ ФАЙЛ:</b>\n<code>{fileName}</code>\n\n▶️ <a href=\"{url}\">ДИВИТИСЬ РЕЗУЛЬТАТ</a>";
-                var copyButton = new InlineKeyboardMarkup(
-                    [[InlineKeyboardButton.WithCopyText("📋 СКОПІЮВАТИ ПОСИЛАННЯ", url)]]);
+                var msgText = $"\ud83c\udfac <b>ГОТОВИЙ ФАЙЛ:</b>\n<code>{EscapeHtml(fileName)}</code>";
+                var buttons = new InlineKeyboardMarkup([
+                    [InlineKeyboardButton.WithUrl("\u25b6\ufe0f ДИВИТИСЬ РЕЗУЛЬТАТ", url)],
+                    [InlineKeyboardButton.WithCopyText("\ud83d\udccb СКОПІЮВАТИ ПОСИЛАННЯ", url)]
+                ]);
                 
-                await _botClient.SendMessage(chatId, msgText, parseMode: ParseMode.Html, replyMarkup: copyButton, cancellationToken: ct);
+                await _botClient.SendMessage(chatId, msgText, parseMode: ParseMode.Html, replyMarkup: buttons, cancellationToken: ct);
             }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Pipeline failed for {FileName}.", state.FileName);
-            await _botClient.EditMessageText(chatId, msgId, $"❌ <b>CRITICAL FAILURE</b>\n\n<pre>{ex.Message}</pre>", parseMode: ParseMode.Html, cancellationToken: ct);
+            await _botClient.EditMessageText(chatId, msgId, $"❌ <b>CRITICAL FAILURE</b>\n\n<pre>{EscapeHtml(ex.Message)}</pre>", parseMode: ParseMode.Html, cancellationToken: ct);
         }
     }
 
@@ -289,6 +291,8 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         }
         await base.StopAsync(cancellationToken);
     }
+
+    private static string EscapeHtml(string s) => s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
 
     private Task HandleErrorAsync(ITelegramBotClient client, Exception ex, CancellationToken ct)
     {
