@@ -46,17 +46,20 @@ internal sealed partial class CloudflareTunnelManager : IAsyncDisposable
             var tcs = new TaskCompletionSource<string?>();
             using var reg = ct.Register(() => tcs.TrySetResult(null));
 
-            _process.ErrorDataReceived += (_, e) =>
+            void OnData(object sender, DataReceivedEventArgs e)
             {
                 if (e.Data is null) return;
-                logger.LogDebug("[cloudflared] {Line}", e.Data);
+                logger.LogInformation("[cloudflared] {Line}", e.Data);
 
                 var match = TunnelUrlRegex().Match(e.Data);
                 if (match.Success && !match.Value.Contains("api.trycloudflare.com"))
                     tcs.TrySetResult(match.Value);
-            };
+            }
 
+            _process.ErrorDataReceived += OnData;
+            _process.OutputDataReceived += OnData;
             _process.BeginErrorReadLine();
+            _process.BeginOutputReadLine();
 
             PublicUrl = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(20), ct))
                 == tcs.Task ? tcs.Task.Result : null;
