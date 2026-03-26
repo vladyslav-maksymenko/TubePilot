@@ -4,6 +4,8 @@ using TubePilot.Core.Contracts;
 using TubePilot.Infrastructure.Drive;
 using TubePilot.Infrastructure.Drive.Options;
 using TubePilot.Infrastructure.Drive.State;
+using TubePilot.Infrastructure.GoogleSheets;
+using TubePilot.Infrastructure.GoogleSheets.Options;
 using TubePilot.Infrastructure.Telegram;
 using TubePilot.Infrastructure.Telegram.Options;
 using TubePilot.Infrastructure.Video;
@@ -17,12 +19,15 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
         services.Configure<DriveOptions>(configuration.GetSection(DriveOptions.SectionName));
+        services.Configure<GoogleSheetsOptions>(configuration.GetSection(GoogleSheetsOptions.SectionName));
         services.AddSingleton<IKnownFilesStore, KnownFilesStore>();
         services.AddSingleton<IDriveWatcher, GoogleDriveWatcher>();
 
         services.Configure<TelegramOptions>(configuration.GetSection(TelegramOptions.SectionName));
+        services.Configure<PublishingOptions>(configuration.GetSection(PublishingOptions.SectionName));
         services.AddSingleton<IFfmpegRunner, FfmpegRunner>();
         services.AddSingleton<IVideoProcessor, FfmpegVideoProcessor>();
+        services.AddSingleton<IGoogleSheetsLogger, GoogleSheetsLogger>();
 
         services.Configure<YouTubeOptions>(configuration.GetSection(YouTubeOptions.SectionName));
         services.AddHttpClient();

@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Net;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -12,21 +12,32 @@ using Telegram.Bot.Types.ReplyMarkups;
 using TubePilot.Core.Contracts;
 using TubePilot.Infrastructure.Telegram.Models;
 using TubePilot.Infrastructure.Telegram.Options;
+using TubePilot.Infrastructure.YouTube.Options;
 using DriveFile = TubePilot.Core.Domain.DriveFile;
 
 namespace TubePilot.Infrastructure.Telegram;
 
 internal sealed class TelegramBotService : BackgroundService, ITelegramBotService
 {
+    private const string SubscriberFile = "telegram_subscriber.txt";
+    private const string PublishResultPrefix = "res:";
+    private const string PublishWizardPrefix = "pw:";
+
     private readonly ITelegramBotClient _botClient;
     private readonly IVideoProcessor _videoProcessor;
+    private readonly IYouTubeUploader _youTubeUploader;
+    private readonly IGoogleSheetsLogger _googleSheetsLogger;
     private readonly ILogger<TelegramBotService> _logger;
     private readonly IOptionsMonitor<TelegramOptions> _telegramOptions;
-
-    private const string SubscriberFile = "telegram_subscriber.txt";
+    private readonly IOptionsMonitor<PublishingOptions> _publishingOptions;
+    private readonly IOptionsMonitor<YouTubeOptions> _youTubeOptions;
+    private CancellationToken _serviceStoppingToken;
 
     private readonly ConcurrentDictionary<int, VideoProcessingState> _userSelections = [];
-    private readonly ConcurrentDictionary<int, Task> _activeJobs = [];
+    private readonly ConcurrentDictionary<int, Task> _activeProcessingJobs = [];
+    private readonly ConcurrentDictionary<long, PublishWizardSession> _publishSessionsByChatId = [];
+    private readonly ConcurrentDictionary<long, Task> _activePublishJobsByChatId = [];
+    private readonly ConcurrentDictionary<int, PublishedResultContext> _publishedResultsByMessageId = [];
 
     private static readonly Dictionary<string, string> OptionLabels = new()
     {
@@ -44,12 +55,20 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
     public TelegramBotService(
         IOptionsMonitor<TelegramOptions> options,
+        IOptionsMonitor<PublishingOptions> publishingOptions,
+        IOptionsMonitor<YouTubeOptions> youTubeOptions,
         IVideoProcessor videoProcessor,
+        IYouTubeUploader youTubeUploader,
+        IGoogleSheetsLogger googleSheetsLogger,
         ILogger<TelegramBotService> logger)
     {
         _videoProcessor = videoProcessor;
+        _youTubeUploader = youTubeUploader;
+        _googleSheetsLogger = googleSheetsLogger;
         _logger = logger;
         _telegramOptions = options;
+        _publishingOptions = publishingOptions;
+        _youTubeOptions = youTubeOptions;
 
         var token = options.CurrentValue.BotToken;
         if (string.IsNullOrWhiteSpace(token))
@@ -63,6 +82,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        _serviceStoppingToken = stoppingToken;
         var receiverOptions = new ReceiverOptions
         {
             AllowedUpdates = [UpdateType.Message, UpdateType.CallbackQuery]
@@ -95,10 +115,10 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         var encodedName = H(file.Name);
 
         var text =
-            $"\U0001F680 <b>Знайдено нове медіа!</b>\n\n" +
-            $"<blockquote>\U0001F464 <b>Файл:</b> <code>{encodedName}</code>\n" +
-            $"\U0001F4BE <b>Вага:</b> {sizeMb:F1} MB</blockquote>\n\n" +
-            $"\U0001F3AF Оберіть фільтри унікалізації й натисніть <b>Почати обробку</b> \U0001F447";
+            $"🚀 <b>Знайдено нове медіа!</b>\n\n" +
+            $"<blockquote>👤 <b>Файл:</b> <code>{encodedName}</code>\n" +
+            $"💾 <b>Вага:</b> {sizeMb:F1} MB</blockquote>\n\n" +
+            $"🎯 Оберіть фільтри унікалізації й натисніть <b>Почати обробку</b> 👇";
 
         var state = new VideoProcessingState { FileId = file.Id, FileName = file.Name, LocalPath = localPath };
 
@@ -119,17 +139,17 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         foreach (var opt in OptionLabels)
         {
             var isSelected = state.SelectedOptions.Contains(opt.Key);
-            var check = isSelected ? "\u2705" : "\U0001F518";
+            var check = isSelected ? "✅" : "🔘";
             buttons.Add([InlineKeyboardButton.WithCallbackData($"{check} {opt.Value}", $"t|{opt.Key}")]);
         }
 
         buttons.Add(
         [
-            InlineKeyboardButton.WithCallbackData("\U0001F4A0 Вибрати всі", "all"),
-            InlineKeyboardButton.WithCallbackData("\u2716\uFE0F Очистити", "none")
+            InlineKeyboardButton.WithCallbackData("💠 Вибрати всі", "all"),
+            InlineKeyboardButton.WithCallbackData("✖️ Очистити", "none")
         ]);
 
-        buttons.Add([InlineKeyboardButton.WithCallbackData("\u25B6\uFE0F ПОЧАТИ ОБРОБКУ", "start")]);
+        buttons.Add([InlineKeyboardButton.WithCallbackData("▶️ ПОЧАТИ ОБРОБКУ", "start")]);
 
         return new InlineKeyboardMarkup(buttons);
     }
@@ -159,39 +179,76 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
     private async Task ProcessMessageAsync(Message message, CancellationToken ct)
     {
-        if (message.Text != "/start")
+        var chatId = message.Chat.Id;
+        var text = message.Text?.Trim();
+
+        if (text is "/start")
         {
+            if (!IsAuthorized(chatId))
+            {
+                _logger.LogWarning("Unauthorized /start from ChatId: {ChatId}", chatId);
+                await _botClient.SendMessage(chatId, "🚫 Доступ заборонено.", cancellationToken: ct);
+                return;
+            }
+
+            await File.WriteAllTextAsync(SubscriberFile, chatId.ToString(), ct);
+
+            var startText =
+                "✅ <b>Авторизація успішна!</b>\n\n" +
+                "Тепер я буду надсилати сюди інтерфейс для обробки кожного нового відео, яке потрапляє на Google Drive 🚀";
+
+            await _botClient.SendMessage(chatId, startText, parseMode: ParseMode.Html, cancellationToken: ct);
+            _logger.LogInformation("Successfully linked bot to user ChatId: {ChatId}", chatId);
             return;
         }
-
-        var chatId = message.Chat.Id;
 
         if (!IsAuthorized(chatId))
         {
-            _logger.LogWarning("Unauthorized /start from ChatId: {ChatId}", chatId);
-            await _botClient.SendMessage(chatId, "\U0001F6AB Доступ заборонено.", cancellationToken: ct);
             return;
         }
 
-        await File.WriteAllTextAsync(SubscriberFile, chatId.ToString(), ct);
+        if (text is null)
+        {
+            return;
+        }
 
-        var text =
-            "\u2705 <b>Авторизація успішна!</b>\n\n" +
-            "Тепер я буду надсилати сюди інтерфейс для обробки кожного нового відео, яке потрапляє на Google Drive \U0001F6F8";
+        if (text.Equals("/cancel", StringComparison.OrdinalIgnoreCase))
+        {
+            if (_publishSessionsByChatId.ContainsKey(chatId))
+            {
+                await CancelPublishWizardAsync(chatId, "❌ Публікацію скасовано.", ct);
+            }
 
-        await _botClient.SendMessage(chatId, text, parseMode: ParseMode.Html, cancellationToken: ct);
-        _logger.LogInformation("Successfully linked bot to user ChatId: {ChatId}", chatId);
+            return;
+        }
+
+        if (_publishSessionsByChatId.TryGetValue(chatId, out var session))
+        {
+            await HandleWizardTextAsync(session, text, ct);
+        }
     }
 
     private async Task ProcessCallbackAsync(CallbackQuery query, CancellationToken ct)
     {
         var msgId = query.Message?.MessageId ?? 0;
         var chatId = query.Message?.Chat.Id ?? 0;
-        var data = query.Data ?? "";
+        var data = query.Data ?? string.Empty;
 
         if (!IsAuthorized(chatId))
         {
-            await _botClient.AnswerCallbackQuery(query.Id, "\U0001F6AB Доступ заборонено.", showAlert: true, cancellationToken: ct);
+            await _botClient.AnswerCallbackQuery(query.Id, "🚫 Доступ заборонено.", showAlert: true, cancellationToken: ct);
+            return;
+        }
+
+        if (data.StartsWith(PublishResultPrefix, StringComparison.Ordinal))
+        {
+            await HandlePublishedResultCallbackAsync(query, chatId, msgId, data[PublishResultPrefix.Length..], ct);
+            return;
+        }
+
+        if (data.StartsWith(PublishWizardPrefix, StringComparison.Ordinal))
+        {
+            await HandleWizardCallbackAsync(query, chatId, data[PublishWizardPrefix.Length..], ct);
             return;
         }
 
@@ -199,7 +256,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         {
             await _botClient.AnswerCallbackQuery(
                 query.Id,
-                "\u23F3 Сесія застаріла. Завантажте нове відео.",
+                "⏳ Сесія застаріла. Завантажте нове відео.",
                 showAlert: true,
                 cancellationToken: ct);
             return;
@@ -229,7 +286,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 updateKeyboard = false;
                 if (state.SelectedOptions.Count == 0)
                 {
-                    await _botClient.AnswerCallbackQuery(query.Id, "\u26A0\uFE0F Оберіть бодай один фільтр.", showAlert: true, cancellationToken: ct);
+                    await _botClient.AnswerCallbackQuery(query.Id, "⚠️ Оберіть бодай один фільтр.", showAlert: true, cancellationToken: ct);
                     return;
                 }
 
@@ -237,13 +294,13 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 await _botClient.EditMessageText(
                     chatId,
                     msgId,
-                    $"\u2699\uFE0F <b>GPU ОБРОБКА: АКТИВНО</b>\n\n<blockquote>\U0001F464 <code>{H(state.FileName)}</code></blockquote>\n\n\U0001F4CA <code>[----------] 0%</code>\n\U0001F504 <i>Ініціалізація FFmpeg Engine...</i>",
+                    $"⚙️ <b>GPU ОБРОБКА: АКТИВНО</b>\n\n<blockquote>👤 <code>{H(state.FileName)}</code></blockquote>\n\n📊 <code>[----------] 0%</code>\n🔄 <i>Ініціалізація FFmpeg Engine...</i>",
                     parseMode: ParseMode.Html,
                     cancellationToken: ct);
 
-                var job = RunProcessingJobAsync(chatId, msgId, state, ct);
-                _activeJobs[msgId] = job;
-                _ = job.ContinueWith(_ => _activeJobs.TryRemove(msgId, out _!), TaskScheduler.Default);
+                var job = RunProcessingJobAsync(chatId, msgId, state, _serviceStoppingToken);
+                _activeProcessingJobs[msgId] = job;
+                _ = job.ContinueWith(_ => _activeProcessingJobs.TryRemove(msgId, out _), TaskScheduler.Default);
                 break;
             default:
                 updateKeyboard = false;
@@ -257,6 +314,470 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         }
     }
 
+    private async Task HandlePublishedResultCallbackAsync(
+        CallbackQuery query,
+        long chatId,
+        int msgId,
+        string action,
+        CancellationToken ct)
+    {
+        switch (action)
+        {
+            case "publish":
+                if (_publishSessionsByChatId.ContainsKey(chatId))
+                {
+                    await _botClient.AnswerCallbackQuery(
+                        query.Id,
+                        "Спочатку заверши або скасуй поточний wizard.",
+                        showAlert: true,
+                        cancellationToken: ct);
+                    return;
+                }
+
+                if (!_publishedResultsByMessageId.TryGetValue(msgId, out var resultContext))
+                {
+                    await _botClient.AnswerCallbackQuery(
+                        query.Id,
+                        "Не вдалося знайти дані для публікації.",
+                        showAlert: true,
+                        cancellationToken: ct);
+                    return;
+                }
+
+                var session = new PublishWizardSession(resultContext, chatId);
+                _publishSessionsByChatId[chatId] = session;
+                await _botClient.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                await SendTitlePromptAsync(session, ct);
+                return;
+
+            case "cancel":
+                if (_publishSessionsByChatId.ContainsKey(chatId))
+                {
+                    await CancelPublishWizardAsync(chatId, "❌ Публікацію скасовано.", ct);
+                }
+                else
+                {
+                    await _botClient.AnswerCallbackQuery(query.Id, "Немає активної публікації.", showAlert: false, cancellationToken: ct);
+                }
+
+                return;
+
+            default:
+                await _botClient.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                return;
+        }
+    }
+
+    private async Task HandleWizardCallbackAsync(CallbackQuery query, long chatId, string action, CancellationToken ct)
+    {
+        if (!_publishSessionsByChatId.TryGetValue(chatId, out var session))
+        {
+            await _botClient.AnswerCallbackQuery(query.Id, "Wizard вже завершено.", showAlert: true, cancellationToken: ct);
+            return;
+        }
+
+        switch (action)
+        {
+            case "use-file-name":
+                if (session.Step != PublishWizardStep.WaitingForTitle)
+                {
+                    await _botClient.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                    return;
+                }
+
+                session.Title = PublishingScheduleHelper.GetDefaultTitle(session.ResultContext.ResultFileName);
+                await _botClient.AnswerCallbackQuery(query.Id, "Використано ім'я файлу.", cancellationToken: ct);
+                await SendDescriptionPromptAsync(session, ct);
+                return;
+
+            case "cancel":
+                await _botClient.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                await CancelPublishWizardAsync(chatId, "❌ Публікацію скасовано.", ct);
+                return;
+
+            case "schedule-now":
+                if (session.Step != PublishWizardStep.WaitingForScheduleChoice)
+                {
+                    await _botClient.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                    return;
+                }
+
+                session.ScheduledPublishAtUtc = null;
+                await _botClient.AnswerCallbackQuery(query.Id, "Публікація буде одразу.", cancellationToken: ct);
+                await SendConfirmPromptAsync(session, ct);
+                return;
+
+            case "schedule-pick":
+                if (session.Step != PublishWizardStep.WaitingForScheduleChoice)
+                {
+                    await _botClient.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                    return;
+                }
+
+                await _botClient.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                await SendCustomDatePromptAsync(session, ct);
+                return;
+
+            case "confirm":
+                if (session.Step != PublishWizardStep.Confirm)
+                {
+                    await _botClient.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                    return;
+                }
+
+                await _botClient.AnswerCallbackQuery(query.Id, "Починаю upload...", cancellationToken: ct);
+                await StartUploadAsync(session, _serviceStoppingToken);
+                return;
+
+            default:
+                await _botClient.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                return;
+        }
+    }
+
+    private async Task HandleWizardTextAsync(PublishWizardSession session, string text, CancellationToken ct)
+    {
+        if (text.Equals("/cancel", StringComparison.OrdinalIgnoreCase))
+        {
+            await CancelPublishWizardAsync(session.ChatId, "❌ Публікацію скасовано.", ct);
+            return;
+        }
+
+        switch (session.Step)
+        {
+            case PublishWizardStep.WaitingForTitle:
+                if (string.IsNullOrWhiteSpace(text))
+                {
+                    await _botClient.SendMessage(session.ChatId, "Заголовок не може бути порожнім. Введи його ще раз:", cancellationToken: ct);
+                    return;
+                }
+
+                session.Title = text.Trim();
+                await SendDescriptionPromptAsync(session, ct);
+                return;
+
+            case PublishWizardStep.WaitingForDescription:
+                session.Description = text.Equals("/skip", StringComparison.OrdinalIgnoreCase) ? string.Empty : text.Trim();
+                await SendTagsPromptAsync(session, ct);
+                return;
+
+            case PublishWizardStep.WaitingForTags:
+                session.Tags = text.Equals("/skip", StringComparison.OrdinalIgnoreCase)
+                    ? []
+                    : PublishingScheduleHelper.ParseTags(text);
+                await SendSchedulePromptAsync(session, ct);
+                return;
+
+            case PublishWizardStep.WaitingForCustomDate:
+                if (!PublishingScheduleHelper.TryParseScheduledPublishAt(
+                        text,
+                        _publishingOptions.CurrentValue.TimeZoneId,
+                        DateTimeOffset.UtcNow,
+                        out var scheduledPublishAtUtc,
+                        out var errorMessage))
+                {
+                    await _botClient.SendMessage(session.ChatId, errorMessage, cancellationToken: ct);
+                    return;
+                }
+
+                session.ScheduledPublishAtUtc = scheduledPublishAtUtc;
+                await SendConfirmPromptAsync(session, ct);
+                return;
+
+            case PublishWizardStep.Confirm:
+                await _botClient.SendMessage(session.ChatId, "Підтверди публікацію кнопкою нижче або /cancel.", cancellationToken: ct);
+                return;
+
+            case PublishWizardStep.Uploading:
+                await _botClient.SendMessage(session.ChatId, "Upload вже триває. Дочекайся завершення.", cancellationToken: ct);
+                return;
+
+            default:
+                return;
+        }
+    }
+    private async Task SendTitlePromptAsync(PublishWizardSession session, CancellationToken ct)
+    {
+        session.Step = PublishWizardStep.WaitingForTitle;
+        var text =
+            "📝 <b>Введи заголовок (Title):</b>\n\n" +
+            $"Файл: <code>{H(session.ResultContext.ResultFileName)}</code>";
+
+        var message = await _botClient.SendMessage(
+            session.ChatId,
+            text,
+            parseMode: ParseMode.Html,
+            replyMarkup: new InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton.WithCallbackData("✅ Використати ім'я файлу", $"{PublishWizardPrefix}use-file-name")],
+                [InlineKeyboardButton.WithCallbackData("❌ Cancel", $"{PublishWizardPrefix}cancel")]
+            ]),
+            cancellationToken: ct);
+
+        session.PromptMessageId = message.MessageId;
+    }
+
+    private async Task SendDescriptionPromptAsync(PublishWizardSession session, CancellationToken ct)
+    {
+        session.Step = PublishWizardStep.WaitingForDescription;
+        await _botClient.SendMessage(
+            session.ChatId,
+            "🧾 Введи опис (Description) або /skip:",
+            cancellationToken: ct);
+    }
+
+    private async Task SendTagsPromptAsync(PublishWizardSession session, CancellationToken ct)
+    {
+        session.Step = PublishWizardStep.WaitingForTags;
+        await _botClient.SendMessage(
+            session.ChatId,
+            "🏷️ Введи теги через кому або /skip:",
+            cancellationToken: ct);
+    }
+
+    private async Task SendSchedulePromptAsync(PublishWizardSession session, CancellationToken ct)
+    {
+        session.Step = PublishWizardStep.WaitingForScheduleChoice;
+
+        await _botClient.SendMessage(
+            session.ChatId,
+            "🗓️ Коли публікувати?",
+            replyMarkup: new InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton.WithCallbackData("🚀 Зараз", $"{PublishWizardPrefix}schedule-now")],
+                [InlineKeyboardButton.WithCallbackData("🕒 Вибрати дату і час", $"{PublishWizardPrefix}schedule-pick")],
+                [InlineKeyboardButton.WithCallbackData("❌ Cancel", $"{PublishWizardPrefix}cancel")]
+            ]),
+            cancellationToken: ct);
+    }
+
+    private async Task SendCustomDatePromptAsync(PublishWizardSession session, CancellationToken ct)
+    {
+        session.Step = PublishWizardStep.WaitingForCustomDate;
+        var timeZoneId = _publishingOptions.CurrentValue.TimeZoneId;
+        await _botClient.SendMessage(
+            session.ChatId,
+            $"Введи дату і час у форматі: YYYY-MM-DD HH:mm (наприклад 2026-03-26 21:11)\nTimezone: {timeZoneId}",
+            cancellationToken: ct);
+    }
+
+    private async Task SendConfirmPromptAsync(PublishWizardSession session, CancellationToken ct)
+    {
+        session.Step = PublishWizardStep.Confirm;
+
+        var description = string.IsNullOrWhiteSpace(session.Description) ? "/skip" : session.Description;
+        var tags = session.Tags.Count == 0 ? "/skip" : string.Join(", ", session.Tags);
+        var publishTime = PublishingScheduleHelper.FormatPublishTime(session.ScheduledPublishAtUtc, _publishingOptions.CurrentValue.TimeZoneId);
+
+        var text =
+            "📋 <b>Підтвердження upload</b>\n\n" +
+            $"<blockquote>\n" +
+            $"📁 Файл: <code>{H(session.ResultContext.ResultFileName)}</code>\n" +
+            $"📝 Title: <code>{H(session.Title)}</code>\n" +
+            $"🧾 Description: <code>{H(description)}</code>\n" +
+            $"🏷️ Tags: <code>{H(tags)}</code>\n" +
+            $"🗓️ Publish: <code>{H(publishTime)}</code>\n" +
+            $"</blockquote>";
+
+        var message = await _botClient.SendMessage(
+            session.ChatId,
+            text,
+            parseMode: ParseMode.Html,
+            replyMarkup: new InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton.WithCallbackData("✅ Підтвердити upload", $"{PublishWizardPrefix}confirm")],
+                [InlineKeyboardButton.WithCallbackData("❌ Cancel", $"{PublishWizardPrefix}cancel")]
+            ]),
+            cancellationToken: ct);
+
+        session.SummaryMessageId = message.MessageId;
+    }
+
+    private async Task StartUploadAsync(PublishWizardSession session, CancellationToken ct)
+    {
+        if (!_publishSessionsByChatId.TryGetValue(session.ChatId, out var currentSession) || !ReferenceEquals(currentSession, session))
+        {
+            return;
+        }
+
+        session.Step = PublishWizardStep.Uploading;
+        session.LastProgressPercent = -1;
+        session.UploadCancellation?.Dispose();
+        session.UploadCancellation = new CancellationTokenSource();
+        var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, session.UploadCancellation.Token);
+
+        if (session.SummaryMessageId is not null)
+        {
+            session.ProgressMessageId = session.SummaryMessageId;
+            await _botClient.EditMessageText(
+                session.ChatId,
+                session.SummaryMessageId.Value,
+                BuildProgressText(session, 0),
+                parseMode: ParseMode.Html,
+                cancellationToken: ct);
+        }
+        else
+        {
+            var message = await _botClient.SendMessage(
+                session.ChatId,
+                BuildProgressText(session, 0),
+                parseMode: ParseMode.Html,
+                cancellationToken: ct);
+            session.ProgressMessageId = message.MessageId;
+        }
+
+        var job = RunUploadJobAsync(session, linkedCts.Token);
+        _activePublishJobsByChatId[session.ChatId] = job;
+        _ = job.ContinueWith(_ =>
+        {
+            linkedCts.Dispose();
+            session.UploadCancellation?.Dispose();
+            session.UploadCancellation = null;
+            _activePublishJobsByChatId.TryRemove(session.ChatId, out _);
+        }, TaskScheduler.Default);
+    }
+
+    private async Task RunUploadJobAsync(PublishWizardSession session, CancellationToken ct)
+    {
+        try
+        {
+            var request = new YouTubeUploadRequest(
+                session.ResultContext.ResultFilePath,
+                session.Title,
+                session.Description,
+                session.Tags,
+                session.ScheduledPublishAtUtc,
+                CategoryId: _youTubeOptions.CurrentValue.DefaultCategoryId);
+
+            var result = await _youTubeUploader.UploadAsync(
+                request,
+                percent => UpdateUploadProgressAsync(session, percent, ct),
+                ct);
+
+            await _googleSheetsLogger.LogUploadAsync(
+                session.ResultContext.SourceFileName,
+                session.Title,
+                result.VideoId,
+                result.YouTubeUrl,
+                result.Status.ToString().ToLowerInvariant(),
+                result.ScheduledAtUtc,
+                ct);
+
+            await SendUploadSuccessAsync(session, result, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            await SendUploadCancelledAsync(session, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "YouTube upload failed for {FileName}.", session.ResultContext.ResultFileName);
+            await SendUploadFailureAsync(session, ex, ct);
+        }
+        finally
+        {
+            _publishSessionsByChatId.TryRemove(session.ChatId, out _);
+        }
+    }
+
+    private async Task UpdateUploadProgressAsync(PublishWizardSession session, int percent, CancellationToken ct)
+    {
+        if (session.ProgressMessageId is null || percent <= session.LastProgressPercent)
+        {
+            return;
+        }
+
+        session.LastProgressPercent = percent;
+        await _botClient.EditMessageText(
+            session.ChatId,
+            session.ProgressMessageId.Value,
+            BuildProgressText(session, percent),
+            parseMode: ParseMode.Html,
+            cancellationToken: ct);
+    }
+
+    private static string BuildProgressText(PublishWizardSession session, int percent)
+    {
+        var label = session.ScheduledPublishAtUtc is null ? "Published" : "Scheduled";
+        return
+            $"📤 <b>{label} upload to YouTube...</b>\n\n" +
+            $"<blockquote>📁 <code>{H(session.ResultContext.ResultFileName)}</code>\n" +
+            $"📝 <code>{H(session.Title)}</code></blockquote>\n\n" +
+            $"📊 <code>[{new string('#', percent / 10)}{new string('-', 10 - (percent / 10))}] {percent}%</code>";
+    }
+
+    private async Task SendUploadSuccessAsync(PublishWizardSession session, YouTubeUploadResult result, CancellationToken ct)
+    {
+        var text =
+            $"✅ <b>{(result.Status == YouTubeUploadStatus.Scheduled ? "Scheduled" : "Published")}</b>\n\n" +
+            $"<blockquote>📁 <code>{H(session.ResultContext.ResultFileName)}</code>\n" +
+            $"📝 <code>{H(session.Title)}</code>\n" +
+            $"🔗 <a href=\"{H(result.YouTubeUrl)}\">Open on YouTube</a></blockquote>";
+
+        if (session.ProgressMessageId is not null)
+        {
+            await _botClient.EditMessageText(
+                session.ChatId,
+                session.ProgressMessageId.Value,
+                text,
+                parseMode: ParseMode.Html,
+                cancellationToken: ct);
+        }
+        else
+        {
+            await _botClient.SendMessage(session.ChatId, text, parseMode: ParseMode.Html, cancellationToken: ct);
+        }
+    }
+
+    private async Task SendUploadFailureAsync(PublishWizardSession session, Exception ex, CancellationToken ct)
+    {
+        var text =
+            $"❌ <b>Upload failed</b>\n\n" +
+            $"<pre>{H(ex.Message)}</pre>";
+
+        if (session.ProgressMessageId is not null)
+        {
+            await _botClient.EditMessageText(
+                session.ChatId,
+                session.ProgressMessageId.Value,
+                text,
+                parseMode: ParseMode.Html,
+                cancellationToken: ct);
+        }
+        else
+        {
+            await _botClient.SendMessage(session.ChatId, text, parseMode: ParseMode.Html, cancellationToken: ct);
+        }
+    }
+
+    private async Task SendUploadCancelledAsync(PublishWizardSession session, CancellationToken ct)
+    {
+        var text = "❌ <b>Upload cancelled</b>";
+
+        if (session.ProgressMessageId is not null)
+        {
+            await _botClient.EditMessageText(
+                session.ChatId,
+                session.ProgressMessageId.Value,
+                text,
+                parseMode: ParseMode.Html,
+                cancellationToken: ct);
+        }
+        else
+        {
+            await _botClient.SendMessage(session.ChatId, text, parseMode: ParseMode.Html, cancellationToken: ct);
+        }
+    }
+
+    private async Task CancelPublishWizardAsync(long chatId, string message, CancellationToken ct)
+    {
+        if (_publishSessionsByChatId.TryRemove(chatId, out var session))
+        {
+            session.UploadCancellation?.Cancel();
+        }
+
+        await _botClient.SendMessage(chatId, message, cancellationToken: ct);
+    }
     private async Task RunProcessingJobAsync(long chatId, int msgId, VideoProcessingState state, CancellationToken ct)
     {
         try
@@ -277,7 +798,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 var bar = new string('#', filled) + new string('-', 10 - filled);
 
                 var text =
-                    $"\u2699\uFE0F <b>GPU ОБРОБКА: В ПРОЦЕСІ</b>\n\n<blockquote>\U0001F464 <code>{H(state.FileName)}</code></blockquote>\n\n\U0001F4CA <code>[{bar}] {pct}%</code>\n\U0001F504 <i>Render Engine (FFmpeg)...</i>";
+                    $"⚙️ <b>GPU ОБРОБКА: В ПРОЦЕСІ</b>\n\n<blockquote>👤 <code>{H(state.FileName)}</code></blockquote>\n\n📊 <code>[{bar}] {pct}%</code>\n🔄 <i>Render Engine (FFmpeg)...</i>";
 
                 if (text == lastText)
                 {
@@ -297,9 +818,9 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             }, ct);
 
             var finalTxt =
-                $"\u2705 <b>УНІКАЛІЗАЦІЮ ЗАВЕРШЕНО</b>\n\n" +
-                $"<blockquote>\U0001F464 <code>{H(state.FileName)}</code>\n" +
-                $"\u26A1 Фільтрів застосовано: {state.SelectedOptions.Count}</blockquote>";
+                $"✅ <b>УНІКАЛІЗАЦІЮ ЗАВЕРШЕНО</b>\n\n" +
+                $"<blockquote>👤 <code>{H(state.FileName)}</code>\n" +
+                $"⚡ Фільтрів застосовано: {state.SelectedOptions.Count}</blockquote>";
 
             await _botClient.EditMessageText(chatId, msgId, finalTxt, parseMode: ParseMode.Html, cancellationToken: ct);
 
@@ -307,40 +828,22 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             {
                 var absoluteLocalPath = Path.GetFullPath(res);
                 var fileName = Path.GetFileName(absoluteLocalPath) ?? absoluteLocalPath;
+                var resultUrl = BuildPublicResultUrl(fileName);
 
-                var baseUrl = _telegramOptions.CurrentValue.BaseUrl?.TrimEnd('/') ?? string.Empty;
-                var url = $"{baseUrl}/play/{Uri.EscapeDataString(fileName)}";
+                var context = new PublishedResultContext(
+                    state.FileName,
+                    fileName,
+                    absoluteLocalPath,
+                    resultUrl);
 
-                if (!IsTelegramSafeButtonUrl(url))
-                {
-                    var msgTextNoButton =
-                        $"\U0001F3AC <b>ГОТОВИЙ ФАЙЛ:</b>\n<code>{H(fileName)}</code>\n\n" +
-                        $"\U0001F4C1 Локально: <code>{H(absoluteLocalPath)}</code>\n" +
-                        (string.IsNullOrWhiteSpace(baseUrl)
-                            ? ""
-                            : $"\U0001F517 URL: <code>{H(url)}</code>\n") +
-                        "\n\u26A0\uFE0F Telegram не відкриває локальні/внутрішні URL у кнопках. " +
-                        "Щоб мати кнопку — задай публічний https URL у <code>Telegram:BaseUrl</code> (наприклад, через ngrok).";
+                var message = await _botClient.SendMessage(
+                    chatId,
+                    BuildResultMessage(context),
+                    parseMode: ParseMode.Html,
+                    replyMarkup: BuildResultKeyboard(context),
+                    cancellationToken: ct);
 
-                    await _botClient.SendMessage(chatId, msgTextNoButton, parseMode: ParseMode.Html, cancellationToken: ct);
-                    continue;
-                }
-
-                var msgText =
-                    $"\U0001F3AC <b>ГОТОВИЙ ФАЙЛ:</b>\n<code>{H(fileName)}</code>\n\n" +
-                    $"\u25B6\uFE0F <a href=\"{H(url)}\">ДИВИТИСЬ РЕЗУЛЬТАТ</a>";
-
-                var replyMarkup = new InlineKeyboardMarkup([[InlineKeyboardButton.WithUrl("\U0001F517 ВІДКРИТИ РЕЗУЛЬТАТ", url)]]);
-
-                try
-                {
-                    await _botClient.SendMessage(chatId, msgText, parseMode: ParseMode.Html, replyMarkup: replyMarkup, cancellationToken: ct);
-                }
-                catch (ApiRequestException ex) when (ex.ErrorCode == 400)
-                {
-                    await _botClient.SendMessage(chatId, msgText, parseMode: ParseMode.Html, cancellationToken: ct);
-                    _logger.LogWarning(ex, "Telegram rejected inline keyboard for URL: {Url}", url);
-                }
+                _publishedResultsByMessageId[message.MessageId] = context;
             }
         }
         catch (Exception ex)
@@ -349,18 +852,68 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             await _botClient.EditMessageText(
                 chatId,
                 msgId,
-                $"\u274C <b>CRITICAL FAILURE</b>\n\n<pre>{H(ex.Message)}</pre>",
+                $"❌ <b>CRITICAL FAILURE</b>\n\n<pre>{H(ex.Message)}</pre>",
                 parseMode: ParseMode.Html,
                 cancellationToken: ct);
         }
     }
 
+    private string BuildPublicResultUrl(string fileName)
+    {
+        var baseUrl = _telegramOptions.CurrentValue.BaseUrl?.TrimEnd('/') ?? string.Empty;
+        return string.IsNullOrWhiteSpace(baseUrl)
+            ? string.Empty
+            : $"{baseUrl}/play/{Uri.EscapeDataString(fileName)}";
+    }
+
+    private static string BuildResultMessage(PublishedResultContext context)
+    {
+        var lines = new List<string>
+        {
+            "🎬 <b>ГОТОВИЙ ФАЙЛ:</b>",
+            $"<code>{H(context.ResultFileName)}</code>",
+            string.Empty,
+            $"📁 Локально: <code>{H(context.ResultFilePath)}</code>"
+        };
+
+        if (!string.IsNullOrWhiteSpace(context.PublicUrl))
+        {
+            lines.Add($"🔗 URL: <code>{H(context.PublicUrl)}</code>");
+        }
+
+        return string.Join('\n', lines);
+    }
+
+    private static InlineKeyboardMarkup BuildResultKeyboard(PublishedResultContext context)
+    {
+        var buttons = new List<IEnumerable<InlineKeyboardButton>>();
+
+        if (!string.IsNullOrWhiteSpace(context.PublicUrl) && IsTelegramSafeButtonUrl(context.PublicUrl))
+        {
+            buttons.Add([InlineKeyboardButton.WithUrl("🔗 Відкрити результат", context.PublicUrl)]);
+        }
+
+        buttons.Add(
+        [
+            InlineKeyboardButton.WithCallbackData("📤 Опублікувати на YouTube", $"{PublishResultPrefix}publish"),
+            InlineKeyboardButton.WithCallbackData("❌ Скасувати", $"{PublishResultPrefix}cancel")
+        ]);
+
+        return new InlineKeyboardMarkup(buttons);
+    }
+
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
-        if (!_activeJobs.IsEmpty)
+        if (!_activeProcessingJobs.IsEmpty)
         {
-            _logger.LogInformation("Waiting for {Count} active processing job(s) to complete...", _activeJobs.Count);
-            await Task.WhenAll(_activeJobs.Values);
+            _logger.LogInformation("Waiting for {Count} active processing job(s) to complete...", _activeProcessingJobs.Count);
+            await Task.WhenAll(_activeProcessingJobs.Values);
+        }
+
+        if (!_activePublishJobsByChatId.IsEmpty)
+        {
+            _logger.LogInformation("Waiting for {Count} active publish job(s) to complete...", _activePublishJobsByChatId.Count);
+            await Task.WhenAll(_activePublishJobsByChatId.Values);
         }
 
         await base.StopAsync(cancellationToken);
