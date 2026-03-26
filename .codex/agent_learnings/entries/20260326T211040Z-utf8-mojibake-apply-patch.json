@@ -1,0 +1,11 @@
+{
+  "ts_utc": "2026-03-26T21:10:40Z",
+  "category": "technical-gotcha",
+  "text": "Some source files contain non-ASCII (e.g., Ukrainian) strings. Terminal output may show mojibake, and copying that into apply_patch can fail to match the real UTF-8 file contents.\nPrefer patching around ASCII-only context lines (or insert new lines near ASCII anchors) instead of replacing lines that include localized text.",
+  "issue": 9,
+  "pointers": [
+    "TubePilot/TubePilot.Infrastructure/Telegram/TelegramBotService.cs",
+    "PR https://github.com/vladyslav-maksymenko/TubePilot/pull/13"
+  ]
+}
+

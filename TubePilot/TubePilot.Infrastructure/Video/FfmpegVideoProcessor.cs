@@ -28,7 +28,7 @@ internal sealed class FfmpegVideoProcessor(
     public async Task<IReadOnlyList<string>> ProcessAsync(
         string inputPath,
         HashSet<string> options,
-        Func<int, Task> progressCallback,
+        Func<VideoProcessingProgress, Task> progressCallback,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(inputPath);
@@ -39,6 +39,20 @@ internal sealed class FfmpegVideoProcessor(
         {
             throw new FileNotFoundException("Input video not found.", inputPath);
         }
+
+        var lastProgress = new VideoProcessingProgress(-1, VideoProcessingStage.Init);
+        async Task ReportAsync(VideoProcessingProgress progress)
+        {
+            if (progress.Percent == lastProgress.Percent && progress.Stage == lastProgress.Stage)
+            {
+                return;
+            }
+
+            lastProgress = progress;
+            await progressCallback(progress);
+        }
+
+        await ReportAsync(new VideoProcessingProgress(0, VideoProcessingStage.Init));
 
         var selectedOptions = OrderedOptions.Where(options.Contains).ToArray();
         var sliceRequested = selectedOptions.Contains("slice") || selectedOptions.Contains("slice_long");
@@ -70,10 +84,12 @@ internal sealed class FfmpegVideoProcessor(
             await RunStepAsync(
                 mediaInfo.DurationSeconds,
                 BuildTransformArguments(inputPath, outputPath, mediaInfo, appliedOptions),
-                progressCallback,
+                VideoProcessingStage.Transform,
+                ReportAsync,
                 completedSteps: 0,
                 totalSteps: 1,
                 ct);
+            await ReportAsync(new VideoProcessingProgress(100, VideoProcessingStage.Finalizing));
             return [outputPath];
         }
 
@@ -81,7 +97,7 @@ internal sealed class FfmpegVideoProcessor(
         if (slices.Count == 0)
         {
             logger.LogWarning("Slice mode requested for {InputPath}, but no slices were produced from {Duration:F2}s.", inputPath, mediaInfo.DurationSeconds);
-            await progressCallback(100);
+            await ReportAsync(new VideoProcessingProgress(100, VideoProcessingStage.Finalizing));
             return [];
         }
 
@@ -105,7 +121,8 @@ internal sealed class FfmpegVideoProcessor(
                     await RunStepAsync(
                         slice.DurationSeconds,
                         BuildCutArguments(inputPath, finalSlicePath, slice.StartSeconds, slice.DurationSeconds),
-                        progressCallback,
+                        VideoProcessingStage.Slicing,
+                        ReportAsync,
                         completedSteps,
                         totalSteps,
                         ct);
@@ -120,7 +137,8 @@ internal sealed class FfmpegVideoProcessor(
                 await RunStepAsync(
                     slice.DurationSeconds,
                     BuildCutArguments(inputPath, tempCutPath, slice.StartSeconds, slice.DurationSeconds),
-                    progressCallback,
+                    VideoProcessingStage.Slicing,
+                    ReportAsync,
                     completedSteps,
                     totalSteps,
                     ct);
@@ -132,7 +150,8 @@ internal sealed class FfmpegVideoProcessor(
                 await RunStepAsync(
                     slice.DurationSeconds,
                     BuildTransformArguments(tempCutPath, finalOutputPath, mediaInfo with { DurationSeconds = slice.DurationSeconds }, appliedOptions),
-                    progressCallback,
+                    VideoProcessingStage.Transform,
+                    ReportAsync,
                     completedSteps,
                     totalSteps,
                     ct);
@@ -140,7 +159,7 @@ internal sealed class FfmpegVideoProcessor(
                 outputs.Add(finalOutputPath);
             }
 
-            await progressCallback(100);
+            await ReportAsync(new VideoProcessingProgress(100, VideoProcessingStage.Finalizing));
             return outputs;
         }
         finally
@@ -155,12 +174,14 @@ internal sealed class FfmpegVideoProcessor(
     private async Task RunStepAsync(
         double durationSeconds,
         IReadOnlyList<string> arguments,
-        Func<int, Task> overallProgressCallback,
+        VideoProcessingStage stage,
+        Func<VideoProcessingProgress, Task> overallProgressCallback,
         int completedSteps,
         int totalSteps,
         CancellationToken ct)
     {
         var lastReported = -1;
+        await overallProgressCallback(new VideoProcessingProgress(ScaleProgress(completedSteps, totalSteps, 0), stage));
         await ffmpegRunner.RunAsync(
             arguments,
             durationSeconds,
@@ -173,7 +194,7 @@ internal sealed class FfmpegVideoProcessor(
                 }
 
                 lastReported = scaledPercent;
-                await overallProgressCallback(scaledPercent);
+                await overallProgressCallback(new VideoProcessingProgress(scaledPercent, stage));
             },
             ct);
 
@@ -182,7 +203,7 @@ internal sealed class FfmpegVideoProcessor(
             : Math.Clamp((int)Math.Round(((completedSteps + 1d) / totalSteps) * 100d), 0, 100);
         if (completedPercent > lastReported)
         {
-            await overallProgressCallback(completedPercent);
+            await overallProgressCallback(new VideoProcessingProgress(completedPercent, stage));
         }
     }
 
