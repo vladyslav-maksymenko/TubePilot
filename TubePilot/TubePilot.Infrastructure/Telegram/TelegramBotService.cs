@@ -3,6 +3,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Telegram.Bot;
+using Telegram.Bot.Exceptions;
 using Telegram.Bot.Polling;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
@@ -267,10 +268,21 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 var url = $"{baseUrl}/play/{Uri.EscapeDataString(fileName)}";
 
                 var msgText = $"🎬 <b>ГОТОВИЙ ФАЙЛ:</b>\n<code>{fileName}</code>\n\n▶️ <a href=\"{url}\">ДИВИТИСЬ РЕЗУЛЬТАТ</a>";
-                var copyButton = new InlineKeyboardMarkup(
-                    [[InlineKeyboardButton.WithCopyText("📋 СКОПІЮВАТИ ПОСИЛАННЯ", url)]]);
-                
-                await _botClient.SendMessage(chatId, msgText, parseMode: ParseMode.Html, replyMarkup: copyButton, cancellationToken: ct);
+                // Telegram copy-text buttons have strict limits; long URLs (e.g. URL-encoded unicode filenames)
+                // can be rejected with BUTTON_COPY_TEXT_INVALID. Fall back to a normal URL button.
+                InlineKeyboardMarkup replyMarkup = url.Length <= 256
+                    ? new InlineKeyboardMarkup([[InlineKeyboardButton.WithCopyText("📋 СКОПІЮВАТИ ПОСИЛАННЯ", url)]])
+                    : new InlineKeyboardMarkup([[InlineKeyboardButton.WithUrl("🔗 ВІДКРИТИ РЕЗУЛЬТАТ", url)]]);
+
+                try
+                {
+                    await _botClient.SendMessage(chatId, msgText, parseMode: ParseMode.Html, replyMarkup: replyMarkup, cancellationToken: ct);
+                }
+                catch (ApiRequestException ex) when (ex.ErrorCode == 400 && ex.Message.Contains("BUTTON_COPY_TEXT_INVALID", StringComparison.OrdinalIgnoreCase))
+                {
+                    var fallback = new InlineKeyboardMarkup([[InlineKeyboardButton.WithUrl("🔗 ВІДКРИТИ РЕЗУЛЬТАТ", url)]]);
+                    await _botClient.SendMessage(chatId, msgText, parseMode: ParseMode.Html, replyMarkup: fallback, cancellationToken: ct);
+                }
             }
         }
         catch (Exception ex)
