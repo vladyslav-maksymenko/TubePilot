@@ -263,21 +263,37 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         {
             var lastUpdate = DateTime.MinValue;
             var lastText = string.Empty;
+            var lastStage = VideoProcessingStage.Init;
+            var lastPct = -1;
 
-            var results = await _videoProcessor.ProcessAsync(state.LocalPath, state.SelectedOptions, async pct =>
+            var results = await _videoProcessor.ProcessAsync(state.LocalPath, state.SelectedOptions, async progress =>
             {
-                if ((DateTime.UtcNow - lastUpdate).TotalSeconds < 2 && pct < 100)
+                var now = DateTime.UtcNow;
+                var pct = Math.Clamp(progress.Percent, 0, 100);
+                var stage = progress.Stage;
+                var stageChanged = stage != lastStage;
+
+                if (!stageChanged && pct == lastPct)
                 {
                     return;
                 }
 
-                lastUpdate = DateTime.UtcNow;
+                if (!stageChanged && (now - lastUpdate).TotalSeconds < 2 && pct < 100)
+                {
+                    return;
+                }
+
+                lastUpdate = now;
+                lastStage = stage;
+                lastPct = pct;
 
                 var filled = pct / 10;
                 var bar = new string('#', filled) + new string('-', 10 - filled);
 
                 var text =
                     $"\u2699\uFE0F <b>GPU ОБРОБКА: В ПРОЦЕСІ</b>\n\n<blockquote>\U0001F464 <code>{H(state.FileName)}</code></blockquote>\n\n\U0001F4CA <code>[{bar}] {pct}%</code>\n\U0001F504 <i>Render Engine (FFmpeg)...</i>";
+
+                text = text.Replace("Render Engine (FFmpeg)...", $"Stage: {FormatStage(lastStage)}");
 
                 if (text == lastText)
                 {
@@ -290,7 +306,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 {
                     await _botClient.EditMessageText(chatId, msgId, text, parseMode: ParseMode.Html, cancellationToken: ct);
                 }
-                catch (ApiRequestException ex) when (ex.ErrorCode == 400)
+                catch (ApiRequestException ex) when (ex.ErrorCode is 400 or 429)
                 {
                     _logger.LogDebug(ex, "Telegram rejected progress update (chatId={ChatId}, msgId={MsgId}).", chatId, msgId);
                 }
@@ -373,6 +389,16 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     }
 
     private static string H(string text) => WebUtility.HtmlEncode(text);
+
+    private static string FormatStage(VideoProcessingStage stage)
+        => stage switch
+        {
+            VideoProcessingStage.Init => "Init",
+            VideoProcessingStage.Slicing => "Slicing",
+            VideoProcessingStage.Transform => "Transform",
+            VideoProcessingStage.Finalizing => "Finalizing",
+            _ => stage.ToString()
+        };
 
     private static bool IsTelegramSafeButtonUrl(string url)
     {

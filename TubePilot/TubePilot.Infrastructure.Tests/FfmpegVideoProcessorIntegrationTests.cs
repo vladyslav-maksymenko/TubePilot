@@ -21,17 +21,18 @@ public sealed class FfmpegVideoProcessorIntegrationTests
 
         using var provider = BuildProvider(processedDir);
         var processor = provider.GetRequiredService<IVideoProcessor>();
-        var progressUpdates = new List<int>();
+        var progressUpdates = new List<VideoProcessingProgress>();
 
-        var outputs = await processor.ProcessAsync(inputPath, new HashSet<string> { "mirror" }, pct =>
+        var outputs = await processor.ProcessAsync(inputPath, new HashSet<string> { "mirror" }, progress =>
         {
-            progressUpdates.Add(pct);
+            progressUpdates.Add(progress);
             return Task.CompletedTask;
         });
 
         Assert.Single(outputs);
         Assert.True(File.Exists(outputs[0]));
-        Assert.Contains(100, progressUpdates);
+        Assert.Contains(progressUpdates, progress => progress.Percent == 100);
+        Assert.Contains(progressUpdates, progress => progress.Stage == VideoProcessingStage.Transform);
         await AssertDifferentHashesAsync(inputPath, outputs[0]);
     }
 
