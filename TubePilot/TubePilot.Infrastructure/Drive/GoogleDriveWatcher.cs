@@ -35,8 +35,11 @@ internal sealed class GoogleDriveWatcher : IDriveWatcher
         
         var request = _driveService.Files.List();
         request.Q = $"'{folderId}' in parents and mimeType contains 'video/' and trashed = false";
-        request.Fields = "files(id, name, mimeType, size, createdTime)";
-        request.OrderBy = "createdTime desc";
+        request.Fields = "files(id, name, mimeType, size, createdTime, modifiedTime)";
+        // If a user "moves" an existing video into the watched folder, createdTime won't change.
+        // modifiedTime usually does, so order by it to surface newly-moved files in the first page.
+        request.OrderBy = "modifiedTime desc";
+        request.PageSize = 1000;
 
         var response = await request.ExecuteAsync(ct);
 
