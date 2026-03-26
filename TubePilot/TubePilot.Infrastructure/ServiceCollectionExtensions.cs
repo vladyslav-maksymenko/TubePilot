@@ -7,6 +7,8 @@ using TubePilot.Infrastructure.Drive.State;
 using TubePilot.Infrastructure.Telegram;
 using TubePilot.Infrastructure.Telegram.Options;
 using TubePilot.Infrastructure.Video;
+using TubePilot.Infrastructure.YouTube;
+using TubePilot.Infrastructure.YouTube.Options;
 
 namespace TubePilot.Infrastructure;
 
@@ -21,6 +23,12 @@ public static class ServiceCollectionExtensions
         services.Configure<TelegramOptions>(configuration.GetSection(TelegramOptions.SectionName));
         services.AddSingleton<IFfmpegRunner, FfmpegRunner>();
         services.AddSingleton<IVideoProcessor, FfmpegVideoProcessor>();
+
+        services.Configure<YouTubeOptions>(configuration.GetSection(YouTubeOptions.SectionName));
+        services.AddHttpClient();
+        services.AddHttpClient<OAuthRefreshTokenAccessTokenProvider>(client => client.Timeout = TimeSpan.FromSeconds(30));
+        services.AddSingleton<IYouTubeAccessTokenProvider>(sp => sp.GetRequiredService<OAuthRefreshTokenAccessTokenProvider>());
+        services.AddHttpClient<IYouTubeUploader, YouTubeUploader>(client => client.Timeout = Timeout.InfiniteTimeSpan);
         
         services.AddSingleton<TelegramBotService>();
         services.AddHostedService(sp => sp.GetRequiredService<TelegramBotService>());
