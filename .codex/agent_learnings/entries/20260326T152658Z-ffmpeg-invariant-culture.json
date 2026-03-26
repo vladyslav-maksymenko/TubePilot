@@ -1,0 +1,7 @@
+﻿{
+  "ts_utc": "2026-03-26T15:26:58Z",
+  "category": "technical-gotcha",
+  "text": "FFmpeg filter strings must be built with invariant culture, not the process locale.\nIf a filter argument contains a decimal and the host culture uses commas, ffmpeg will split the token and fail with a misleading 'No such filter' error.\nUse FormattableString.Invariant or CultureInfo.InvariantCulture for every numeric value inside CLI filter expressions.",
+  "issue": "#2",
+  "pointers": ["TubePilot/TubePilot.Infrastructure/Video/FfmpegVideoProcessor.cs"]
+}
