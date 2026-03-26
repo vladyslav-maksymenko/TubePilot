@@ -60,6 +60,26 @@ public sealed class TelegramProcessingProgressReporterTests
         Assert.Contains("Stage: Transform", edits[1].Text, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ReporterOnlyInvokesEditDelegate_NoSendMessagePathExists()
+    {
+        var editCalls = 0;
+        var timeProvider = new ManualTimeProvider(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        var reporter = new TelegramProcessingProgressReporter(
+            fileName: "file.mp4",
+            timeProvider: timeProvider,
+            throttleInterval: TimeSpan.FromSeconds(2),
+            editMessageText: (_, _) =>
+            {
+                editCalls++;
+                return Task.CompletedTask;
+            });
+
+        await reporter.ReportAsync(new VideoProcessingProgress(1, VideoProcessingStage.Init), CancellationToken.None);
+
+        Assert.Equal(1, editCalls);
+    }
+
     private static TelegramProcessingProgressReporter CreateReporter(
         ManualTimeProvider timeProvider,
         List<(DateTimeOffset At, string Text)> edits,
@@ -83,4 +103,3 @@ public sealed class TelegramProcessingProgressReporterTests
         public override DateTimeOffset GetUtcNow() => _utcNow;
     }
 }
-
