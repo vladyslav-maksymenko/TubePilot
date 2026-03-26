@@ -1,4 +1,5 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
+using System.Net;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -28,16 +29,16 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
     private static readonly Dictionary<string, string> OptionLabels = new()
     {
-        { "mirror", "🪞 Дзеркало (HFlip)" },
-        { "reduce_audio", "🔉 Гучність -15%" },
-        { "slow_down", "🐌 Delay 4-7%" },
-        { "speed_up", "⚡ Speed 3-5%" },
-        { "color_correct", "🎨 Корекція кольору" },
-        { "slice", "✂️ Шортс (2:30-3:10)" },
-        { "slice_long", "✂️ Long (5:10-7:10)" },
-        { "qr_overlay", "📱 Віджет QR" },
-        { "rotate", "🔄 Захисний поворот" },
-        { "downscale_1080p", "📐 Даунскейл 1080p" }
+        { "mirror", "рџЄћ Р”Р·РµСЂРєР°Р»Рѕ (HFlip)" },
+        { "reduce_audio", "рџ”‰ Р“СѓС‡РЅС–СЃС‚СЊ -15%" },
+        { "slow_down", "рџђЊ Delay 4-7%" },
+        { "speed_up", "вљЎ Speed 3-5%" },
+        { "color_correct", "рџЋЁ РљРѕСЂРµРєС†С–СЏ РєРѕР»СЊРѕСЂСѓ" },
+        { "slice", "вњ‚пёЏ РЁРѕСЂС‚СЃ (2:30-3:10)" },
+        { "slice_long", "вњ‚пёЏ Long (5:10-7:10)" },
+        { "qr_overlay", "рџ“± Р’С–РґР¶РµС‚ QR" },
+        { "rotate", "рџ”„ Р—Р°С…РёСЃРЅРёР№ РїРѕРІРѕСЂРѕС‚" },
+        { "downscale_1080p", "рџ“ђ Р”Р°СѓРЅСЃРєРµР№Р» 1080p" }
     };
 
     public TelegramBotService(IOptionsMonitor<TelegramOptions> options, IVideoProcessor videoProcessor, ILogger<TelegramBotService> logger)
@@ -79,16 +80,16 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
         if (chatId == 0)
         {
-            _logger.LogWarning("Ніхто не підписаний на бота! Зайдіть у Telegram і напишіть /start вашому боту.");
+            _logger.LogWarning("РќС–С…С‚Рѕ РЅРµ РїС–РґРїРёСЃР°РЅРёР№ РЅР° Р±РѕС‚Р°! Р—Р°Р№РґС–С‚СЊ Сѓ Telegram С– РЅР°РїРёС€С–С‚СЊ /start РІР°С€РѕРјСѓ Р±РѕС‚Сѓ.");
             return;
         }
 
         var sizeMb = file.SizeBytes / (1024.0 * 1024.0);
         
-        var text = $"🚀 <b>Знайдено нове медіа!</b>\n\n" +
-                   $"<blockquote>👤 <b>Файл:</b> <code>{file.Name}</code>\n" +
-                   $"💾 <b>Вага:</b> {sizeMb:F1} MB</blockquote>\n\n" +
-                   $"🎯 Оберіть фільтри унікалізації й тисніть <b>Почати обробку</b> 👇";
+        var text = $"рџљЂ <b>Р—РЅР°Р№РґРµРЅРѕ РЅРѕРІРµ РјРµРґС–Р°!</b>\n\n" +
+                   $"<blockquote>рџ‘¤ <b>Р¤Р°Р№Р»:</b> <code>{file.Name}</code>\n" +
+                   $"рџ’ѕ <b>Р’Р°РіР°:</b> {sizeMb:F1} MB</blockquote>\n\n" +
+                   $"рџЋЇ РћР±РµСЂС–С‚СЊ С„С–Р»СЊС‚СЂРё СѓРЅС–РєР°Р»С–Р·Р°С†С–С— Р№ С‚РёСЃРЅС–С‚СЊ <b>РџРѕС‡Р°С‚Рё РѕР±СЂРѕР±РєСѓ</b> рџ‘‡";
 
         var state = new VideoProcessingState { FileId = file.Id, FileName = file.Name, LocalPath = localPath };
 
@@ -110,16 +111,16 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         foreach (var opt in OptionLabels)
         {
             var isSelected = state.SelectedOptions.Contains(opt.Key);
-            var check = isSelected ? "✅" : "🔘";
+            var check = isSelected ? "вњ…" : "рџ”";
             buttons.Add([InlineKeyboardButton.WithCallbackData($"{check} {opt.Value}", $"t|{opt.Key}")]);
         }
 
         buttons.Add([
-            InlineKeyboardButton.WithCallbackData("💠 Вибрати всі", "all"),
-            InlineKeyboardButton.WithCallbackData("✖️ Очистити", "none")
+            InlineKeyboardButton.WithCallbackData("рџ’  Р’РёР±СЂР°С‚Рё РІСЃС–", "all"),
+            InlineKeyboardButton.WithCallbackData("вњ–пёЏ РћС‡РёСЃС‚РёС‚Рё", "none")
         ]);
 
-        buttons.Add([InlineKeyboardButton.WithCallbackData("▶️ ПОЧАТИ ОБРОБКУ", "start")]);
+        buttons.Add([InlineKeyboardButton.WithCallbackData("в–¶пёЏ РџРћР§РђРўР РћР‘Р РћР‘РљРЈ", "start")]);
 
         return new InlineKeyboardMarkup(buttons);
     }
@@ -156,13 +157,13 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             if (!IsAuthorized(chatId))
             {
                 _logger.LogWarning("Unauthorized /start from ChatId: {ChatId}", chatId);
-                await _botClient.SendMessage(chatId, "⛔ Доступ заборонено.", cancellationToken: ct);
+                await _botClient.SendMessage(chatId, "в›” Р”РѕСЃС‚СѓРї Р·Р°Р±РѕСЂРѕРЅРµРЅРѕ.", cancellationToken: ct);
                 return;
             }
 
             await File.WriteAllTextAsync(SubscriberFile, chatId.ToString(), ct);
             
-            var text = "✅ <b>Авторизація успішна!</b>\n\nТепер я буду надсилати сюди інтерфейс для обробки кожного нового відео, яке потрапляє на Google Drive 🛸";
+            var text = "вњ… <b>РђРІС‚РѕСЂРёР·Р°С†С–СЏ СѓСЃРїС–С€РЅР°!</b>\n\nРўРµРїРµСЂ СЏ Р±СѓРґСѓ РЅР°РґСЃРёР»Р°С‚Рё СЃСЋРґРё С–РЅС‚РµСЂС„РµР№СЃ РґР»СЏ РѕР±СЂРѕР±РєРё РєРѕР¶РЅРѕРіРѕ РЅРѕРІРѕРіРѕ РІС–РґРµРѕ, СЏРєРµ РїРѕС‚СЂР°РїР»СЏС” РЅР° Google Drive рџ›ё";
             await _botClient.SendMessage(chatId, text, parseMode: ParseMode.Html, cancellationToken: ct);
             
             _logger.LogInformation("Successfully linked bot to user ChatId: {ChatId}", chatId);
@@ -177,13 +178,13 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
         if (!IsAuthorized(chatId))
         {
-            await _botClient.AnswerCallbackQuery(query.Id, "⛔ Доступ заборонено.", showAlert: true, cancellationToken: ct);
+            await _botClient.AnswerCallbackQuery(query.Id, "в›” Р”РѕСЃС‚СѓРї Р·Р°Р±РѕСЂРѕРЅРµРЅРѕ.", showAlert: true, cancellationToken: ct);
             return;
         }
 
         if (!_userSelections.TryGetValue(msgId, out var state))
         {
-            await _botClient.AnswerCallbackQuery(query.Id, "⏳ Сесія застаріла! Завантажте нове відео.", showAlert: true, cancellationToken: ct);
+            await _botClient.AnswerCallbackQuery(query.Id, "вЏі РЎРµСЃС–СЏ Р·Р°СЃС‚Р°СЂС–Р»Р°! Р—Р°РІР°РЅС‚Р°Р¶С‚Рµ РЅРѕРІРµ РІС–РґРµРѕ.", showAlert: true, cancellationToken: ct);
             return;
         }
 
@@ -208,13 +209,13 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 updateKeyboard = false;
                 if (state.SelectedOptions.Count == 0)
                 {
-                    await _botClient.AnswerCallbackQuery(query.Id, "⚠️ Оберіть бодай один фільтр!", showAlert: true, cancellationToken: ct);
+                    await _botClient.AnswerCallbackQuery(query.Id, "вљ пёЏ РћР±РµСЂС–С‚СЊ Р±РѕРґР°Р№ РѕРґРёРЅ С„С–Р»СЊС‚СЂ!", showAlert: true, cancellationToken: ct);
                     return;
                 }
-                await _botClient.AnswerCallbackQuery(query.Id, "Запуск кластера...", cancellationToken: ct);
+                await _botClient.AnswerCallbackQuery(query.Id, "Р—Р°РїСѓСЃРє РєР»Р°СЃС‚РµСЂР°...", cancellationToken: ct);
                 await _botClient.EditMessageText(
                     chatId, msgId,
-                    $"⚙️ <b>GPU ОБРОБКА: АКТИВНО</b>\n\n<blockquote>👤 <code>{state.FileName}</code></blockquote>\n\n📊 <code>[░░░░░░░░░░] 0%</code>\n🔄 <i>Ініціалізація FFmpeg Engine...</i>",
+                    $"вљ™пёЏ <b>GPU РћР‘Р РћР‘РљРђ: РђРљРўРР’РќРћ</b>\n\n<blockquote>рџ‘¤ <code>{state.FileName}</code></blockquote>\n\nрџ“Љ <code>[в–‘в–‘в–‘в–‘в–‘в–‘в–‘в–‘в–‘в–‘] 0%</code>\nрџ”„ <i>Р†РЅС–С†С–Р°Р»С–Р·Р°С†С–СЏ FFmpeg Engine...</i>",
                     parseMode: ParseMode.Html, cancellationToken: ct);
                 var job = RunProcessingJobAsync(chatId, msgId, state, ct);
                 _activeJobs[msgId] = job;
@@ -248,47 +249,76 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
                 var filled = pct / 10;
                 var bar = new string('█', filled) + new string('░', 10 - filled);
-                var text = $"⚙️ <b>GPU ОБРОБКА: В ПРОЦЕСІ</b>\n\n<blockquote>👤 <code>{state.FileName}</code></blockquote>\n\n📊 <code>[{bar}] {pct}%</code>\n🔄 <i>Render Engine (FFmpeg)...</i>";
+                var text = $"вљ™пёЏ <b>GPU РћР‘Р РћР‘РљРђ: Р’ РџР РћР¦Р•РЎР†</b>\n\n<blockquote>рџ‘¤ <code>{state.FileName}</code></blockquote>\n\nрџ“Љ <code>[{bar}] {pct}%</code>\nрџ”„ <i>Render Engine (FFmpeg)...</i>";
 
                 if (text == lastText) return;
                 lastText = text;
                 await _botClient.EditMessageText(chatId, msgId, text, parseMode: ParseMode.Html, cancellationToken: ct);
             }, ct);
 
-            var finalTxt = $"✅ <b>УНІКАЛІЗАЦІЮ ЗАВЕРШЕНО</b>\n\n" +
-                           $"<blockquote>👤 <code>{state.FileName}</code>\n" +
-                           $"⚡ Фільтрів застосовано: {state.SelectedOptions.Count}</blockquote>";
+            var finalTxt = $"вњ… <b>РЈРќР†РљРђР›Р†Р—РђР¦Р†Р® Р—РђР’Р•Р РЁР•РќРћ</b>\n\n" +
+                           $"<blockquote>рџ‘¤ <code>{state.FileName}</code>\n" +
+                           $"вљЎ Р¤С–Р»СЊС‚СЂС–РІ Р·Р°СЃС‚РѕСЃРѕРІР°РЅРѕ: {state.SelectedOptions.Count}</blockquote>";
                            
             await _botClient.EditMessageText(chatId, msgId, finalTxt, parseMode: ParseMode.Html, cancellationToken: ct);
 
             foreach (var res in results)
             {
                 var fileName = Path.GetFileName(res) ?? res;
-                var baseUrl = _telegramOptions.CurrentValue.BaseUrl.TrimEnd('/');
+                var baseUrl = _telegramOptions.CurrentValue.BaseUrl?.TrimEnd('/') ?? string.Empty;
                 var url = $"{baseUrl}/play/{Uri.EscapeDataString(fileName)}";
 
-                var msgText = $"🎬 <b>ГОТОВИЙ ФАЙЛ:</b>\n<code>{fileName}</code>\n\n▶️ <a href=\"{url}\">ДИВИТИСЬ РЕЗУЛЬТАТ</a>";
+                if (!IsTelegramSafeButtonUrl(url))
+                {
+                    var msgTextNoUrl = $"СЂСџР‹В¬ <b>Р вЂњР С›Р СћР С›Р вЂ™Р ВР в„ў Р В¤Р С’Р в„ўР вЂє:</b>\n<code>{fileName}</code>\n\n" +
+                                       $"РІС™В РїС‘РЏ <b>Р С™Р Р…Р С•Р С—Р С”Р В°-Р В»РЎвЂ“Р Р…Р С” Р Р…Р Вµ Р Т‘РЎвЂ“РЎвЂќ</b>, Р В±Р С• URL Р Р…Р ВµР С”Р С•РЎР‚Р ВµР С”РЎвЂљР Р…Р С‘Р в„– Р Т‘Р В»РЎРЏ Telegram: <code>{url}</code>\n" +
+                                       $"Р вЂ™Р С”Р В°Р В¶Р С‘РЎвЂљРЎРЉ Р С—РЎС“Р В±Р В»РЎвЂ“РЎвЂЎР Р…Р С‘Р в„– https URL РЎС“ <code>Telegram:BaseUrl</code>.";
+
+                    var copyNameButton = new InlineKeyboardMarkup(
+                        [[InlineKeyboardButton.WithCopyText("СЂСџвЂњвЂ№ Р РЋР С™Р С›Р СџР вЂ Р В®Р вЂ™Р С’Р СћР В Р СњР С’Р вЂ”Р вЂ™Р Р€ Р В¤Р С’Р в„ўР вЂєР Р€", fileName)]]);
+
+                    await _botClient.SendMessage(chatId, msgTextNoUrl, parseMode: ParseMode.Html, replyMarkup: copyNameButton, cancellationToken: ct);
+                    continue;
+                }
+
+                var msgText = $"рџЋ¬ <b>Р“РћРўРћР’РР™ Р¤РђР™Р›:</b>\n<code>{fileName}</code>\n\nв–¶пёЏ <a href=\"{url}\">Р”РР’РРўРРЎР¬ Р Р•Р—РЈР›Р¬РўРђРў</a>";
                 // Telegram copy-text buttons have strict limits; long URLs (e.g. URL-encoded unicode filenames)
                 // can be rejected with BUTTON_COPY_TEXT_INVALID. Fall back to a normal URL button.
                 InlineKeyboardMarkup replyMarkup = url.Length <= 256
-                    ? new InlineKeyboardMarkup([[InlineKeyboardButton.WithCopyText("📋 СКОПІЮВАТИ ПОСИЛАННЯ", url)]])
-                    : new InlineKeyboardMarkup([[InlineKeyboardButton.WithUrl("🔗 ВІДКРИТИ РЕЗУЛЬТАТ", url)]]);
+                    ? new InlineKeyboardMarkup([[InlineKeyboardButton.WithCopyText("рџ“‹ РЎРљРћРџР†Р®Р’РђРўР РџРћРЎРР›РђРќРќРЇ", url)]])
+                    : new InlineKeyboardMarkup([[InlineKeyboardButton.WithUrl("рџ”— Р’Р†Р”РљР РРўР Р Р•Р—РЈР›Р¬РўРђРў", url)]]);
 
                 try
                 {
                     await _botClient.SendMessage(chatId, msgText, parseMode: ParseMode.Html, replyMarkup: replyMarkup, cancellationToken: ct);
                 }
-                catch (ApiRequestException ex) when (ex.ErrorCode == 400 && ex.Message.Contains("BUTTON_COPY_TEXT_INVALID", StringComparison.OrdinalIgnoreCase))
+                catch (ApiRequestException ex) when (ex.ErrorCode == 400)
                 {
-                    var fallback = new InlineKeyboardMarkup([[InlineKeyboardButton.WithUrl("🔗 ВІДКРИТИ РЕЗУЛЬТАТ", url)]]);
-                    await _botClient.SendMessage(chatId, msgText, parseMode: ParseMode.Html, replyMarkup: fallback, cancellationToken: ct);
+                    if (ex.Message.Contains("BUTTON_COPY_TEXT_INVALID", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var fallback = new InlineKeyboardMarkup([[InlineKeyboardButton.WithUrl("рџ”— Р’Р†Р”РљР РРўР Р Р•Р—РЈР›Р¬РўРђРў", url)]]);
+                        try
+                        {
+                            await _botClient.SendMessage(chatId, msgText, parseMode: ParseMode.Html, replyMarkup: fallback, cancellationToken: ct);
+                        }
+                        catch (ApiRequestException innerEx) when (innerEx.ErrorCode == 400)
+                        {
+                            await _botClient.SendMessage(chatId, msgText, parseMode: ParseMode.Html, cancellationToken: ct);
+                            _logger.LogWarning(innerEx, "Telegram rejected fallback inline keyboard for URL: {Url}", url);
+                        }
+
+                        continue;
+                    }
+
+                    await _botClient.SendMessage(chatId, msgText, parseMode: ParseMode.Html, cancellationToken: ct);
+                    _logger.LogWarning(ex, "Telegram rejected inline keyboard for URL: {Url}", url);
                 }
             }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Pipeline failed for {FileName}.", state.FileName);
-            await _botClient.EditMessageText(chatId, msgId, $"❌ <b>CRITICAL FAILURE</b>\n\n<pre>{ex.Message}</pre>", parseMode: ParseMode.Html, cancellationToken: ct);
+            await _botClient.EditMessageText(chatId, msgId, $"вќЊ <b>CRITICAL FAILURE</b>\n\n<pre>{ex.Message}</pre>", parseMode: ParseMode.Html, cancellationToken: ct);
         }
     }
 
@@ -306,5 +336,32 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     {
         _logger.LogError(ex, "Telegram polling error");
         return Task.CompletedTask;
+    }
+
+    private static bool IsTelegramSafeButtonUrl(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        if (uri.Scheme is not ("http" or "https"))
+        {
+            return false;
+        }
+
+        // Telegram commonly rejects loopback hosts ("localhost", "127.0.0.1") in URL buttons.
+        if (uri.IsLoopback)
+        {
+            return false;
+        }
+
+        // Additional guard for "0.0.0.0" etc.
+        if (IPAddress.TryParse(uri.Host, out var ip) && IPAddress.IsLoopback(ip))
+        {
+            return false;
+        }
+
+        return true;
     }
 }
