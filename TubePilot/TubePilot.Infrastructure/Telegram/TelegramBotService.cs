@@ -356,7 +356,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         => _botClient.EditMessageText(
             chatId,
             msgId,
-            BuildQueuedStatusText(state, queuePosition),
+            TelegramProcessingMessageTemplates.BuildQueuedStatusText(state.FileName, queuePosition),
             parseMode: ParseMode.Html,
             cancellationToken: ct);
 
@@ -364,7 +364,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         => _botClient.EditMessageText(
             chatId,
             msgId,
-            BuildProcessingStartText(state),
+            TelegramProcessingMessageTemplates.BuildProcessingStartText(state.FileName),
             parseMode: ParseMode.Html,
             cancellationToken: ct);
 
