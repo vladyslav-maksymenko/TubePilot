@@ -52,7 +52,7 @@ internal sealed partial class CloudflareTunnelManager : IAsyncDisposable
                 logger.LogDebug("[cloudflared] {Line}", e.Data);
 
                 var match = TunnelUrlRegex().Match(e.Data);
-                if (match.Success)
+                if (match.Success && !match.Value.Contains("api.trycloudflare.com"))
                     tcs.TrySetResult(match.Value);
             };
 
