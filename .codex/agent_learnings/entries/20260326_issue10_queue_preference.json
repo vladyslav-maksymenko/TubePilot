@@ -1,0 +1,10 @@
+﻿{
+    "ts_utc":  "2026-03-26T21:41:33Z",
+    "category":  "owner-preference",
+    "issue":  "#10",
+    "pointers":  [
+                     "TubePilot/TubePilot.Infrastructure/Telegram/TelegramBotService.cs",
+                     "TubePilot/TubePilot.Infrastructure.Tests/TelegramProcessingProgressReporterTests.cs"
+                 ],
+    "text":  "Owner wants Telegram processing queue behavior to be per chat, not global.\nWhen capacity is full, reuse the existing status message and edit it to \u0027Queued (#N)\u0027, then edit the same message to \u0027Processing…\u0027 when the job starts.\nQueue position should only be shown at enqueue time to avoid spam and rate limits."
+}
