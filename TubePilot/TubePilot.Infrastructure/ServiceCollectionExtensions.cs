@@ -19,6 +19,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IDriveWatcher, GoogleDriveWatcher>();
 
         services.Configure<TelegramOptions>(configuration.GetSection(TelegramOptions.SectionName));
+        services.AddSingleton<IFfmpegRunner, FfmpegRunner>();
         services.AddSingleton<IVideoProcessor, FfmpegVideoProcessor>();
         
         services.AddSingleton<TelegramBotService>();

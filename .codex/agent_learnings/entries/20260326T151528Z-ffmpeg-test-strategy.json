@@ -1,0 +1,7 @@
+﻿{
+  "ts_utc": "2026-03-26T15:15:28Z",
+  "category": "workflow",
+  "text": "For ffmpeg-heavy changes in this repo, use a two-layer verification strategy.\nUnit tests should pin command shape and error handling with a fake runner, and a short integration test should exercise the real ffmpeg path with synthetic media.\nThis keeps the suite deterministic while still proving the CLI contract end-to-end.",
+  "issue": "#2",
+  "pointers": ["TubePilot.Infrastructure.Tests/FfmpegVideoProcessorIntegrationTests.cs", "TubePilot.Infrastructure.Tests/FfmpegVideoProcessorTests.cs"]
+}
