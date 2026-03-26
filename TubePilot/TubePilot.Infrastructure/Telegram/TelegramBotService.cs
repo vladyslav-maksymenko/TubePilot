@@ -261,13 +261,27 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     {
         try
         {
-            var lastUpdate = DateTime.MinValue;
-            var lastText = string.Empty;
-            var lastStage = VideoProcessingStage.Init;
-            var lastPct = -1;
+            var reporter = new TelegramProcessingProgressReporter(
+                state.FileName,
+                TimeProvider.System,
+                throttleInterval: TimeSpan.FromSeconds(2),
+                editMessageText: async (text, callbackCt) =>
+                {
+                    try
+                    {
+                        await _botClient.EditMessageText(chatId, msgId, text, parseMode: ParseMode.Html, cancellationToken: callbackCt);
+                    }
+                    catch (ApiRequestException ex) when (ex.ErrorCode is 400 or 429)
+                    {
+                        _logger.LogDebug(ex, "Telegram rejected progress update (chatId={ChatId}, msgId={MsgId}).", chatId, msgId);
+                    }
+                });
 
             var results = await _videoProcessor.ProcessAsync(state.LocalPath, state.SelectedOptions, async progress =>
             {
+                await reporter.ReportAsync(progress, ct);
+                return;
+#if false
                 var now = DateTime.UtcNow;
                 var pct = Math.Clamp(progress.Percent, 0, 100);
                 var stage = progress.Stage;
@@ -310,6 +324,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 {
                     _logger.LogDebug(ex, "Telegram rejected progress update (chatId={ChatId}, msgId={MsgId}).", chatId, msgId);
                 }
+#endif
             }, ct);
 
             var finalTxt =
