@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using TubePilot.Core.Contracts;
 using TubePilot.Infrastructure.Drive.Options;
 using TubePilot.Infrastructure.Video;
 
@@ -15,12 +16,12 @@ public sealed class FfmpegVideoProcessorTests
         var runner = new RecordingFfmpegRunner(
             new FfmpegProbeResult(120d, 1920, 1080, HasVideo: true, HasAudio: true));
         var processor = CreateProcessor(processedDir, runner);
-        var progressUpdates = new List<int>();
+        var progressUpdates = new List<VideoProcessingProgress>();
         var options = new HashSet<string> { "mirror", "reduce_audio", "color_correct" };
 
-        var outputs = await processor.ProcessAsync(inputPath, options, pct =>
+        var outputs = await processor.ProcessAsync(inputPath, options, progress =>
         {
-            progressUpdates.Add(pct);
+            progressUpdates.Add(progress);
             return Task.CompletedTask;
         });
 
@@ -35,7 +36,9 @@ public sealed class FfmpegVideoProcessorTests
         Assert.Contains("libx264", runner.RunCalls[0].Arguments);
         Assert.Contains("-c:a", runner.RunCalls[0].Arguments);
         Assert.Contains("aac", runner.RunCalls[0].Arguments);
-        Assert.Contains(100, progressUpdates);
+        Assert.Contains(progressUpdates, progress => progress.Percent == 100);
+        Assert.Contains(progressUpdates, progress => progress.Stage == VideoProcessingStage.Transform);
+        Assert.Contains(progressUpdates, progress => progress.Stage == VideoProcessingStage.Finalizing);
     }
 
     [Fact]
@@ -48,7 +51,12 @@ public sealed class FfmpegVideoProcessorTests
         var processor = CreateProcessor(processedDir, runner);
         var options = new HashSet<string> { "slice", "mirror" };
 
-        var outputs = await processor.ProcessAsync(inputPath, options, _ => Task.CompletedTask);
+        var progressUpdates = new List<VideoProcessingProgress>();
+        var outputs = await processor.ProcessAsync(inputPath, options, progress =>
+        {
+            progressUpdates.Add(progress);
+            return Task.CompletedTask;
+        });
 
         Assert.Single(outputs);
         Assert.True(File.Exists(outputs[0]));
@@ -57,6 +65,9 @@ public sealed class FfmpegVideoProcessorTests
         Assert.Contains("make_zero", runner.RunCalls[0].Arguments);
         Assert.Contains("-filter_complex", runner.RunCalls[1].Arguments);
         Assert.Contains("hflip", string.Join(' ', runner.RunCalls[1].Arguments));
+        Assert.Contains(progressUpdates, progress => progress.Stage == VideoProcessingStage.Slicing);
+        Assert.Contains(progressUpdates, progress => progress.Stage == VideoProcessingStage.Transform);
+        Assert.Contains(progressUpdates, progress => progress.Stage == VideoProcessingStage.Finalizing);
     }
 
     [Fact]

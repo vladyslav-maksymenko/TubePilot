@@ -27,14 +27,15 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     private readonly IVideoProcessor _videoProcessor;
     private readonly IYouTubeUploader _youTubeUploader;
     private readonly IGoogleSheetsLogger _googleSheetsLogger;
+    private readonly TelegramProcessingQueue _processingQueue;
     private readonly ILogger<TelegramBotService> _logger;
     private readonly IOptionsMonitor<TelegramOptions> _telegramOptions;
     private readonly IOptionsMonitor<PublishingOptions> _publishingOptions;
     private readonly IOptionsMonitor<YouTubeOptions> _youTubeOptions;
     private CancellationToken _serviceStoppingToken;
 
-    private readonly ConcurrentDictionary<int, VideoProcessingState> _userSelections = [];
-    private readonly ConcurrentDictionary<int, Task> _activeProcessingJobs = [];
+    private readonly ConcurrentDictionary<(long ChatId, int MessageId), VideoProcessingState> _userSelections = [];
+    private readonly ConcurrentDictionary<(long ChatId, int MessageId), Task> _activeProcessingJobs = [];
     private readonly ConcurrentDictionary<long, PublishWizardSession> _publishSessionsByChatId = [];
     private readonly ConcurrentDictionary<long, Task> _activePublishJobsByChatId = [];
     private readonly ConcurrentDictionary<int, PublishedResultContext> _publishedResultsByMessageId = [];
@@ -60,11 +61,13 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         IVideoProcessor videoProcessor,
         IYouTubeUploader youTubeUploader,
         IGoogleSheetsLogger googleSheetsLogger,
+        TelegramProcessingQueue processingQueue,
         ILogger<TelegramBotService> logger)
     {
         _videoProcessor = videoProcessor;
         _youTubeUploader = youTubeUploader;
         _googleSheetsLogger = googleSheetsLogger;
+        _processingQueue = processingQueue;
         _logger = logger;
         _telegramOptions = options;
         _publishingOptions = publishingOptions;
@@ -129,7 +132,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             replyMarkup: BuildKeyboard(state),
             cancellationToken: ct);
 
-        _userSelections[msg.MessageId] = state;
+        _userSelections[(chatId, msg.MessageId)] = state;
     }
 
     private InlineKeyboardMarkup BuildKeyboard(VideoProcessingState state)
@@ -233,6 +236,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         var msgId = query.Message?.MessageId ?? 0;
         var chatId = query.Message?.Chat.Id ?? 0;
         var data = query.Data ?? string.Empty;
+        var selectionKey = (chatId, msgId);
 
         if (!IsAuthorized(chatId))
         {
@@ -252,7 +256,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             return;
         }
 
-        if (!_userSelections.TryGetValue(msgId, out var state))
+        if (!_userSelections.TryGetValue(selectionKey, out var state))
         {
             await _botClient.AnswerCallbackQuery(
                 query.Id,
@@ -290,18 +294,31 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                     return;
                 }
 
-                await _botClient.AnswerCallbackQuery(query.Id, "Запуск обробки...", cancellationToken: ct);
-                await _botClient.EditMessageText(
+                _userSelections.TryRemove(selectionKey, out _);
+
+                var admission = await _processingQueue.EnqueueAsync(
                     chatId,
                     msgId,
-                    $"⚙️ <b>GPU ОБРОБКА: АКТИВНО</b>\n\n<blockquote>👤 <code>{H(state.FileName)}</code></blockquote>\n\n📊 <code>[----------] 0%</code>\n🔄 <i>Ініціалізація FFmpeg Engine...</i>",
-                    parseMode: ParseMode.Html,
-                    cancellationToken: ct);
+                    onQueuedAsync: async (position, callbackCt) => await EditQueuedMessageAsync(chatId, msgId, state, position, callbackCt),
+                    onStartAsync: async callbackCt => await EditProcessingStartMessageAsync(chatId, msgId, state, callbackCt),
+                    processAsync: callbackCt => RunProcessingJobAsync(chatId, msgId, state, callbackCt),
+                    _serviceStoppingToken);
 
-                var job = RunProcessingJobAsync(chatId, msgId, state, _serviceStoppingToken);
-                _activeProcessingJobs[msgId] = job;
-                _ = job.ContinueWith(_ => _activeProcessingJobs.TryRemove(msgId, out _), TaskScheduler.Default);
-                break;
+                if (admission.Status == TelegramProcessingQueue.QueueAdmissionStatus.Duplicate)
+                {
+                    await _botClient.AnswerCallbackQuery(query.Id, "⏳ Уже в черзі чи в обробці.", cancellationToken: ct);
+                    return;
+                }
+
+                _activeProcessingJobs[selectionKey] = admission.LifecycleTask;
+                _ = admission.LifecycleTask.ContinueWith(_ => _activeProcessingJobs.TryRemove(selectionKey, out _), TaskScheduler.Default);
+
+                var queueText = admission.Status == TelegramProcessingQueue.QueueAdmissionStatus.Queued
+                    ? $"В черзі: #{admission.Position}"
+                    : "Обробка запущена";
+
+                await _botClient.AnswerCallbackQuery(query.Id, queueText, cancellationToken: ct);
+                return;
             default:
                 updateKeyboard = false;
                 break;
@@ -313,6 +330,22 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             await _botClient.AnswerCallbackQuery(query.Id, cancellationToken: ct);
         }
     }
+
+    private Task EditQueuedMessageAsync(long chatId, int msgId, VideoProcessingState state, int queuePosition, CancellationToken ct)
+        => _botClient.EditMessageText(
+            chatId,
+            msgId,
+            TelegramProcessingMessageTemplates.BuildQueuedStatusText(state.FileName, queuePosition),
+            parseMode: ParseMode.Html,
+            cancellationToken: ct);
+
+    private Task EditProcessingStartMessageAsync(long chatId, int msgId, VideoProcessingState state, CancellationToken ct)
+        => _botClient.EditMessageText(
+            chatId,
+            msgId,
+            TelegramProcessingMessageTemplates.BuildProcessingStartText(state.FileName),
+            parseMode: ParseMode.Html,
+            cancellationToken: ct);
 
     private async Task HandlePublishedResultCallbackAsync(
         CallbackQuery query,
@@ -782,39 +815,25 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     {
         try
         {
-            var lastUpdate = DateTime.MinValue;
-            var lastText = string.Empty;
+            var reporter = new TelegramProcessingProgressReporter(
+                state.FileName,
+                TimeProvider.System,
+                throttleInterval: TimeSpan.FromSeconds(2),
+                editMessageText: async (text, callbackCt) =>
+                {
+                    try
+                    {
+                        await _botClient.EditMessageText(chatId, msgId, text, parseMode: ParseMode.Html, cancellationToken: callbackCt);
+                    }
+                    catch (ApiRequestException ex) when (ex.ErrorCode is 400 or 429)
+                    {
+                        _logger.LogDebug(ex, "Telegram rejected progress update (chatId={ChatId}, msgId={MsgId}).", chatId, msgId);
+                    }
+                });
 
-            var results = await _videoProcessor.ProcessAsync(state.LocalPath, state.SelectedOptions, async pct =>
+            var results = await _videoProcessor.ProcessAsync(state.LocalPath, state.SelectedOptions, async progress =>
             {
-                if ((DateTime.UtcNow - lastUpdate).TotalSeconds < 2 && pct < 100)
-                {
-                    return;
-                }
-
-                lastUpdate = DateTime.UtcNow;
-
-                var filled = pct / 10;
-                var bar = new string('#', filled) + new string('-', 10 - filled);
-
-                var text =
-                    $"⚙️ <b>GPU ОБРОБКА: В ПРОЦЕСІ</b>\n\n<blockquote>👤 <code>{H(state.FileName)}</code></blockquote>\n\n📊 <code>[{bar}] {pct}%</code>\n🔄 <i>Render Engine (FFmpeg)...</i>";
-
-                if (text == lastText)
-                {
-                    return;
-                }
-
-                lastText = text;
-
-                try
-                {
-                    await _botClient.EditMessageText(chatId, msgId, text, parseMode: ParseMode.Html, cancellationToken: ct);
-                }
-                catch (ApiRequestException ex) when (ex.ErrorCode == 400)
-                {
-                    _logger.LogDebug(ex, "Telegram rejected progress update (chatId={ChatId}, msgId={MsgId}).", chatId, msgId);
-                }
+                await reporter.ReportAsync(progress, ct);
             }, ct);
 
             var finalTxt =

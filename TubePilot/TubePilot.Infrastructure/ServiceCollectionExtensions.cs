@@ -1,5 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using TubePilot.Core.Contracts;
 using TubePilot.Infrastructure.Drive;
 using TubePilot.Infrastructure.Drive.Options;
@@ -25,6 +27,9 @@ public static class ServiceCollectionExtensions
 
         services.Configure<TelegramOptions>(configuration.GetSection(TelegramOptions.SectionName));
         services.Configure<PublishingOptions>(configuration.GetSection(PublishingOptions.SectionName));
+        services.AddSingleton(sp => new TelegramProcessingQueue(
+            Math.Max(1, sp.GetRequiredService<IOptionsMonitor<TelegramOptions>>().CurrentValue.MaxConcurrentJobs),
+            sp.GetRequiredService<ILogger<TelegramProcessingQueue>>()));
         services.AddSingleton<IFfmpegRunner, FfmpegRunner>();
         services.AddSingleton<IVideoProcessor, FfmpegVideoProcessor>();
         services.AddSingleton<IGoogleSheetsLogger, GoogleSheetsLogger>();
