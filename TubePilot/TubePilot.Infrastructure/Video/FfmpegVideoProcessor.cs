@@ -304,7 +304,7 @@ internal sealed class FfmpegVideoProcessor(
                     break;
                 case "reduce_audio":
                     var volumeReduction = Random.Shared.NextDouble() * 0.10 + 0.80;
-                    audioFilters.Add($"volume={volumeReduction:0.00}");
+                    audioFilters.Add(FormattableString.Invariant($"volume={volumeReduction:0.00}"));
                     break;
                 case "slow_down":
                     var slowdownFactor = Random.Shared.NextDouble() * 0.03 + 1.04;
@@ -320,7 +320,7 @@ internal sealed class FfmpegVideoProcessor(
                     var saturation = 1.0 + Random.Shared.NextDouble() * 0.03 + 0.04;
                     var brightness = -(Random.Shared.NextDouble() * 0.03 + 0.04);
                     var gamma = 1.0 - (Random.Shared.NextDouble() * 0.02 + 0.01);
-                    videoFilters.Add($"eq=saturation={saturation:0.000}:brightness={brightness:0.000}:gamma={gamma:0.000}");
+                    videoFilters.Add(FormattableString.Invariant($"eq=saturation={saturation:0.000}:brightness={brightness:0.000}:gamma={gamma:0.000}"));
                     break;
                 case "qr_overlay":
                     qrOverlayPath = ResolveQrOverlayPath(inputPath);
@@ -329,9 +329,9 @@ internal sealed class FfmpegVideoProcessor(
                     var degrees = Random.Shared.NextDouble() * 2d + 3d;
                     var zoom = Random.Shared.NextDouble() * 0.05 + 1.10;
                     var radians = degrees * Math.PI / 180d;
-                    videoFilters.Add($"scale=iw*{zoom:0.00}:ih*{zoom:0.00}");
-                    videoFilters.Add($"rotate={radians:0.0000}:fillcolor=black");
-                    videoFilters.Add($"crop=iw/{zoom:0.00}:ih/{zoom:0.00}");
+                    videoFilters.Add(FormattableString.Invariant($"scale=iw*{zoom:0.00}:ih*{zoom:0.00}"));
+                    videoFilters.Add(FormattableString.Invariant($"rotate={radians:0.0000}:fillcolor=black"));
+                    videoFilters.Add(FormattableString.Invariant($"crop=iw/{zoom:0.00}:ih/{zoom:0.00}"));
                     break;
                 case "downscale_1080p":
                     if (mediaInfo.Height is > 1080)
@@ -344,12 +344,12 @@ internal sealed class FfmpegVideoProcessor(
 
         if (playbackFactor is not null)
         {
-            videoFilters.Insert(0, $"setpts={playbackFactor:0.0000}*PTS");
+            videoFilters.Insert(0, FormattableString.Invariant($"setpts={playbackFactor:0.0000}*PTS"));
         }
 
         if (audioTempoFactor is not null)
         {
-            audioFilters.Insert(0, $"atempo={audioTempoFactor:0.0000}");
+            audioFilters.Insert(0, FormattableString.Invariant($"atempo={audioTempoFactor:0.0000}"));
         }
 
         var videoNeedsReencode = videoFilters.Count > 0 || qrOverlayPath is not null;
@@ -365,7 +365,7 @@ internal sealed class FfmpegVideoProcessor(
         {
             if (videoFilters.Count > 0)
             {
-                filterParts.Add($"[0:v]{string.Join(',', videoFilters)}[vfiltered]");
+                filterParts.Add(FormattableString.Invariant($"[0:v]{string.Join(',', videoFilters)}[vfiltered]"));
             }
 
             var finalVideoLabel = "0:v";
@@ -384,7 +384,7 @@ internal sealed class FfmpegVideoProcessor(
 
             if (audioFilters.Count > 0 && mediaInfo.HasAudio)
             {
-                filterParts.Add($"[0:a]{string.Join(',', audioFilters)}[aout]");
+                filterParts.Add(FormattableString.Invariant($"[0:a]{string.Join(',', audioFilters)}[aout]"));
             }
 
             if (filterParts.Count > 0)

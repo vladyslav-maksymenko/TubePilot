@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Security.Cryptography;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -80,6 +81,40 @@ public sealed class FfmpegVideoProcessorIntegrationTests
             processor.ProcessAsync(audioPath, new HashSet<string> { "mirror" }, _ => Task.CompletedTask));
 
         Assert.Contains("does not contain a video stream", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CommaDecimalCulture_ReduceAudioStillSucceeds()
+    {
+        var previousCulture = CultureInfo.CurrentCulture;
+        var previousUiCulture = CultureInfo.CurrentUICulture;
+        var locale = CultureInfo.GetCultureInfo("uk-UA");
+
+        try
+        {
+            CultureInfo.CurrentCulture = locale;
+            CultureInfo.CurrentUICulture = locale;
+
+            var workDir = CreateTempDirectory();
+            var processedDir = Path.Combine(workDir, "processed");
+            Directory.CreateDirectory(processedDir);
+            var inputPath = Path.Combine(workDir, "input.mp4");
+            await GenerateVideoAsync(inputPath);
+
+            using var provider = BuildProvider(processedDir);
+            var processor = provider.GetRequiredService<IVideoProcessor>();
+
+            var outputs = await processor.ProcessAsync(inputPath, new HashSet<string> { "reduce_audio" }, _ => Task.CompletedTask);
+
+            Assert.Single(outputs);
+            Assert.True(File.Exists(outputs[0]));
+            await AssertDifferentHashesAsync(inputPath, outputs[0]);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previousCulture;
+            CultureInfo.CurrentUICulture = previousUiCulture;
+        }
     }
 
     private static ServiceProvider BuildProvider(string processedDir)
