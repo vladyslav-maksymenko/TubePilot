@@ -42,7 +42,9 @@ public static class ServiceCollectionExtensions
             return new TelegramBotClient(token);
         });
         services.AddSingleton<IDelay, SystemDelay>();
+        services.AddSingleton<TimeProvider>(TimeProvider.System);
         services.AddSingleton<ITelegramResultCardClient, TelegramResultCardClient>();
+        services.AddSingleton<ITelegramUiClient, TelegramUiClient>();
         services.AddSingleton<ITelegramResultThumbnailGenerator, TelegramResultThumbnailGenerator>();
         services.AddSingleton<TelegramResultCardPublisher>();
         services.AddSingleton<IFfmpegRunner, FfmpegRunner>();

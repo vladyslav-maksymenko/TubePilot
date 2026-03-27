@@ -1,0 +1,10 @@
+{
+  "ts_utc": "2026-03-27T13:23:23Z",
+  "category": "technical-gotcha",
+  "text": "Telegram `MessageId` is only unique per-chat. If you cache published result context by `MessageId` alone, callbacks from another chat can resolve the wrong file (cross-chat leakage). Key caches by `(chatId, messageId)` and/or include a compact group/id in `callback_data` for unambiguous lookups (especially for segmented results).",
+  "issue": "15",
+  "pointers": [
+    "TubePilot/TubePilot.Infrastructure/Telegram/TelegramBotService.cs",
+    "TubePilot/TubePilot.Infrastructure/Telegram/TelegramResultCardPublisher.cs"
+  ]
+}

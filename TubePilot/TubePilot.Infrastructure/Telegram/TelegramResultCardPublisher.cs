@@ -15,6 +15,7 @@ internal sealed class TelegramResultCardPublisher(
 
     public async Task<IReadOnlyList<Message>> SendResultCardsAsync(
         long chatId,
+        int resultGroupId,
         IReadOnlyList<Models.PublishedResultContext> contexts,
         CancellationToken ct)
     {
@@ -26,7 +27,7 @@ internal sealed class TelegramResultCardPublisher(
         var messages = new List<Message>(contexts.Count);
         for (var index = 0; index < contexts.Count; index++)
         {
-            var message = await SendResultCardAsync(chatId, contexts[index], ct);
+            var message = await SendResultCardAsync(chatId, resultGroupId, index, contexts[index], ct);
             messages.Add(message);
 
             if (index < contexts.Count - 1)
@@ -41,24 +42,44 @@ internal sealed class TelegramResultCardPublisher(
     private static string BuildResultMessage(Models.PublishedResultContext context)
         => TelegramSegmentResultMessageBuilder.BuildResultMessage(context);
 
-    private static InlineKeyboardMarkup BuildResultKeyboard(Models.PublishedResultContext context)
+    private static InlineKeyboardMarkup BuildResultKeyboard(Models.PublishedResultContext context, int resultGroupId, int resultIndex)
     {
         var buttons = new List<IEnumerable<InlineKeyboardButton>>();
 
         if (!string.IsNullOrWhiteSpace(context.PublicUrl) && TelegramUrlSafety.IsTelegramSafeButtonUrl(context.PublicUrl))
         {
-            buttons.Add([InlineKeyboardButton.WithUrl("Смотреть", context.PublicUrl)]);
+            buttons.Add([InlineKeyboardButton.WithUrl("РЎРјРѕС‚СЂРµС‚СЊ", context.PublicUrl)]);
         }
 
-        buttons.Add([InlineKeyboardButton.WithCallbackData("📤 Опублікувати на YouTube", $"{TelegramBotService.PublishResultPrefix}publish")]);
+        buttons.Add(
+        [
+            InlineKeyboardButton.WithCallbackData(
+                "рџ“¤ РћРїСѓР±Р»С–РєСѓРІР°С‚Рё РЅР° YouTube",
+                $"{TelegramBotService.PublishResultPrefix}publish:{resultGroupId}:{resultIndex}")
+        ]);
+
+        if (context.TotalParts > 1 && context.PartNumber == 1)
+        {
+            buttons.Add(
+            [
+                InlineKeyboardButton.WithCallbackData(
+                    "рџ“¦ Publish ALL segments",
+                    $"{TelegramBotService.PublishResultPrefix}publish-all:{resultGroupId}")
+            ]);
+        }
 
         return new InlineKeyboardMarkup(buttons);
     }
 
-    private async Task<Message> SendResultCardAsync(long chatId, Models.PublishedResultContext context, CancellationToken ct)
+    private async Task<Message> SendResultCardAsync(
+        long chatId,
+        int resultGroupId,
+        int resultIndex,
+        Models.PublishedResultContext context,
+        CancellationToken ct)
     {
         var caption = BuildResultMessage(context);
-        var keyboard = BuildResultKeyboard(context);
+        var keyboard = BuildResultKeyboard(context, resultGroupId, resultIndex);
         string? thumbPath = null;
 
         try

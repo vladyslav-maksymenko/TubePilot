@@ -26,7 +26,7 @@ public sealed class TelegramResultCardPublisherTests
             new FakeDelay());
 
         var contexts = new[] { CreateContext(publicUrl: "https://example.test/play/out.mp4") };
-        var messages = await publisher.SendResultCardsAsync(chatId: 1, contexts, CancellationToken.None);
+        var messages = await publisher.SendResultCardsAsync(chatId: 1, resultGroupId: 123, contexts, CancellationToken.None);
 
         Assert.Single(messages);
         Assert.Single(client.PhotoCalls);
@@ -51,7 +51,7 @@ public sealed class TelegramResultCardPublisherTests
             new FakeDelay());
 
         var contexts = new[] { CreateContext(publicUrl: "https://example.test/play/out.mp4") };
-        var messages = await publisher.SendResultCardsAsync(chatId: 1, contexts, CancellationToken.None);
+        var messages = await publisher.SendResultCardsAsync(chatId: 1, resultGroupId: 123, contexts, CancellationToken.None);
 
         Assert.Single(messages);
         Assert.Single(client.PhotoCalls);
@@ -78,7 +78,7 @@ public sealed class TelegramResultCardPublisherTests
             CreateContext(publicUrl: null)
         };
 
-        var messages = await publisher.SendResultCardsAsync(chatId: 1, contexts, CancellationToken.None);
+        var messages = await publisher.SendResultCardsAsync(chatId: 1, resultGroupId: 123, contexts, CancellationToken.None);
 
         Assert.Equal(3, messages.Count);
         Assert.Equal(3, client.MessageCalls.Count);
@@ -100,19 +100,48 @@ public sealed class TelegramResultCardPublisherTests
             new FakeDelay());
 
         var contexts = new[] { CreateContext(publicUrl: "https://example.test/play/out.mp4") };
-        await publisher.SendResultCardsAsync(chatId: 1, contexts, CancellationToken.None);
+        await publisher.SendResultCardsAsync(chatId: 1, resultGroupId: 123, contexts, CancellationToken.None);
 
         var markup = Assert.Single(client.MessageCalls).ReplyMarkup;
         var buttons = markup.InlineKeyboard.SelectMany(row => row).ToList();
-        Assert.Contains(buttons, b => b.Text == "Смотреть" && b.Url == "https://example.test/play/out.mp4");
-        Assert.Contains(buttons, b => b.Text.Contains("Опублікувати", StringComparison.Ordinal) && b.CallbackData == "res:publish");
+        Assert.Contains(buttons, b => b.Text == "РЎРјРѕС‚СЂРµС‚СЊ" && b.Url == "https://example.test/play/out.mp4");
+        Assert.Contains(buttons, b => b.CallbackData == "res:publish:123:0");
 
         client.MessageCalls.Clear();
 
-        await publisher.SendResultCardsAsync(chatId: 1, [CreateContext(publicUrl: "http://example.test/play/out.mp4")], CancellationToken.None);
+        await publisher.SendResultCardsAsync(chatId: 1, resultGroupId: 124, [CreateContext(publicUrl: "http://example.test/play/out.mp4")], CancellationToken.None);
         markup = Assert.Single(client.MessageCalls).ReplyMarkup;
         buttons = markup.InlineKeyboard.SelectMany(row => row).ToList();
-        Assert.DoesNotContain(buttons, b => b.Text == "Смотреть");
+        Assert.DoesNotContain(buttons, b => b.Text == "РЎРјРѕС‚СЂРµС‚СЊ");
+    }
+
+    [Fact]
+    public async Task SendResultCardsAsync_IncludesPublishAllSegmentsButton_OnFirstSegmentOnly()
+    {
+        var client = new FakeResultCardClient
+        {
+            SendMessageHandler = _ => Task.FromResult(new Message())
+        };
+
+        var publisher = CreatePublisher(
+            client,
+            new FakeThumbnailGenerator(_ => Task.FromResult<string?>(null)),
+            new FakeDelay());
+
+        var contexts = new[]
+        {
+            CreateContext(publicUrl: null, partNumber: 1, totalParts: 3),
+            CreateContext(publicUrl: null, partNumber: 2, totalParts: 3),
+            CreateContext(publicUrl: null, partNumber: 3, totalParts: 3)
+        };
+
+        await publisher.SendResultCardsAsync(chatId: 1, resultGroupId: 55, contexts, CancellationToken.None);
+
+        var firstButtons = client.MessageCalls[0].ReplyMarkup.InlineKeyboard.SelectMany(row => row).ToList();
+        Assert.Contains(firstButtons, b => b.CallbackData == "res:publish-all:55");
+
+        var secondButtons = client.MessageCalls[1].ReplyMarkup.InlineKeyboard.SelectMany(row => row).ToList();
+        Assert.DoesNotContain(secondButtons, b => b.CallbackData == "res:publish-all:55");
     }
 
     private static TelegramResultCardPublisher CreatePublisher(
@@ -128,7 +157,7 @@ public sealed class TelegramResultCardPublisherTests
             loggerFactory.CreateLogger<TelegramResultCardPublisher>());
     }
 
-    private static PublishedResultContext CreateContext(string? publicUrl)
+    private static PublishedResultContext CreateContext(string? publicUrl, int partNumber = 1, int totalParts = 1)
     {
         var summary = new VideoProcessingSummary(
             Slice: null,
@@ -145,8 +174,8 @@ public sealed class TelegramResultCardPublisherTests
             ResultFileName: "out.mp4",
             ResultFilePath: @"C:\out\out.mp4",
             PublicUrl: publicUrl,
-            PartNumber: 1,
-            TotalParts: 1,
+            PartNumber: partNumber,
+            TotalParts: totalParts,
             DurationSeconds: 1,
             SizeBytes: 1,
             ProcessingSummary: summary);

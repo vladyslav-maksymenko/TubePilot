@@ -6,6 +6,7 @@ internal static class PublishingScheduleHelper
 {
     private const string DefaultTimeZoneId = "Europe/Kiev";
     private const string DateTimeFormat = "yyyy-MM-dd HH:mm";
+    private static readonly string[] TimeOfDayFormats = ["h\\:mm", "hh\\:mm", "h\\:mm\\:ss", "hh\\:mm\\:ss"];
 
     public static string GetDefaultTitle(string fileName)
         => Path.GetFileNameWithoutExtension(fileName);
@@ -51,7 +52,7 @@ internal static class PublishingScheduleHelper
 
         if (string.IsNullOrWhiteSpace(input))
         {
-            errorMessage = "Введи дату і час у форматі YYYY-MM-DD HH:mm.";
+            errorMessage = "Р’РІРµРґРё РґР°С‚Сѓ С– С‡Р°СЃ Сѓ С„РѕСЂРјР°С‚С– YYYY-MM-DD HH:mm.";
             return false;
         }
 
@@ -62,7 +63,7 @@ internal static class PublishingScheduleHelper
                 DateTimeStyles.None,
                 out var localDateTime))
         {
-            errorMessage = "Не можу прочитати дату. Формат має бути YYYY-MM-DD HH:mm.";
+            errorMessage = "РќРµ РјРѕР¶Сѓ РїСЂРѕС‡РёС‚Р°С‚Рё РґР°С‚Сѓ. Р¤РѕСЂРјР°С‚ РјР°С” Р±СѓС‚Рё YYYY-MM-DD HH:mm.";
             return false;
         }
 
@@ -73,7 +74,7 @@ internal static class PublishingScheduleHelper
 
         if (scheduledPublishAtUtc <= utcNow.AddMinutes(2))
         {
-            errorMessage = "Дата і час мають бути в майбутньому. Спробуй ще раз.";
+            errorMessage = "Р”Р°С‚Р° С– С‡Р°СЃ РјР°СЋС‚СЊ Р±СѓС‚Рё РІ РјР°Р№Р±СѓС‚РЅСЊРѕРјСѓ. РЎРїСЂРѕР±СѓР№ С‰Рµ СЂР°Р·.";
             scheduledPublishAtUtc = default;
             return false;
         }
@@ -82,11 +83,64 @@ internal static class PublishingScheduleHelper
         return true;
     }
 
+    public static bool TryParseTimeOfDay(string input, out TimeSpan timeOfDay)
+        => TimeSpan.TryParseExact(
+            input?.Trim() ?? string.Empty,
+            TimeOfDayFormats,
+            CultureInfo.InvariantCulture,
+            out timeOfDay);
+
+    public static DateTimeOffset GetNextFreeSlotUtc(
+        DateTimeOffset utcNow,
+        DateTimeOffset? lastScheduledAtUtc,
+        string? timeZoneId,
+        string dailyPublishTime)
+    {
+        if (!TryParseTimeOfDay(dailyPublishTime, out var timeOfDay))
+        {
+            timeOfDay = new TimeSpan(10, 0, 0);
+        }
+
+        var timeZone = ResolveTimeZone(timeZoneId);
+        var nowLocal = TimeZoneInfo.ConvertTime(utcNow, timeZone);
+
+        DateTime baseLocalDate;
+        if (lastScheduledAtUtc is null)
+        {
+            baseLocalDate = nowLocal.Date;
+        }
+        else
+        {
+            var lastLocal = TimeZoneInfo.ConvertTime(lastScheduledAtUtc.Value, timeZone);
+            baseLocalDate = lastLocal.Date.AddDays(1);
+        }
+
+        var candidateLocal = baseLocalDate.Add(timeOfDay);
+        var candidateUtc = ConvertLocalUnspecifiedToUtc(candidateLocal, timeZone);
+
+        if (candidateUtc <= utcNow.AddMinutes(2))
+        {
+            candidateLocal = candidateLocal.AddDays(1);
+            candidateUtc = ConvertLocalUnspecifiedToUtc(candidateLocal, timeZone);
+        }
+
+        return new DateTimeOffset(candidateUtc, TimeSpan.Zero);
+    }
+
+    public static DateTimeOffset AddLocalDays(DateTimeOffset utcTime, int days, string? timeZoneId)
+    {
+        var timeZone = ResolveTimeZone(timeZoneId);
+        var local = TimeZoneInfo.ConvertTime(utcTime, timeZone);
+        var localNext = local.Date.AddDays(days).Add(local.TimeOfDay);
+        var utcNext = ConvertLocalUnspecifiedToUtc(localNext, timeZone);
+        return new DateTimeOffset(utcNext, TimeSpan.Zero);
+    }
+
     public static string FormatPublishTime(DateTimeOffset? scheduledPublishAtUtc, string? timeZoneId)
     {
         if (scheduledPublishAtUtc is null)
         {
-            return "🚀 Зараз";
+            return "рџљЂ Р—Р°СЂР°Р·";
         }
 
         var timeZone = ResolveTimeZone(timeZoneId);
@@ -132,5 +186,11 @@ internal static class PublishingScheduleHelper
             timeZone = TimeZoneInfo.Utc;
             return false;
         }
+    }
+
+    private static DateTime ConvertLocalUnspecifiedToUtc(DateTime localUnspecified, TimeZoneInfo timeZone)
+    {
+        var local = DateTime.SpecifyKind(localUnspecified, DateTimeKind.Unspecified);
+        return TimeZoneInfo.ConvertTimeToUtc(local, timeZone);
     }
 }
