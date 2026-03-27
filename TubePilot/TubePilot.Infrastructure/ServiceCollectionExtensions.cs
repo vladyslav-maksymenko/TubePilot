@@ -30,6 +30,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(sp => new TelegramProcessingQueue(
             Math.Max(1, sp.GetRequiredService<IOptionsMonitor<TelegramOptions>>().CurrentValue.MaxConcurrentJobs),
             sp.GetRequiredService<ILogger<TelegramProcessingQueue>>()));
+        services.AddSingleton<TelegramResultThumbnailGenerator>();
         services.AddSingleton<IFfmpegRunner, FfmpegRunner>();
         services.AddSingleton<IVideoProcessor, FfmpegVideoProcessor>();
         services.AddSingleton<IGoogleSheetsLogger, GoogleSheetsLogger>();

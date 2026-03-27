@@ -28,6 +28,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     private readonly IYouTubeUploader _youTubeUploader;
     private readonly IGoogleSheetsLogger _googleSheetsLogger;
     private readonly TelegramProcessingQueue _processingQueue;
+    private readonly TelegramResultThumbnailGenerator _thumbnailGenerator;
     private readonly ILogger<TelegramBotService> _logger;
     private readonly IOptionsMonitor<TelegramOptions> _telegramOptions;
     private readonly IOptionsMonitor<PublishingOptions> _publishingOptions;
@@ -54,6 +55,8 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         { "downscale_1080p", "\U0001F4D0 Даунскейл 1080p" }
     };
 
+    private static readonly TimeSpan ResultCardThrottleDelay = TimeSpan.FromMilliseconds(1500);
+
     public TelegramBotService(
         IOptionsMonitor<TelegramOptions> options,
         IOptionsMonitor<PublishingOptions> publishingOptions,
@@ -62,12 +65,14 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         IYouTubeUploader youTubeUploader,
         IGoogleSheetsLogger googleSheetsLogger,
         TelegramProcessingQueue processingQueue,
+        TelegramResultThumbnailGenerator thumbnailGenerator,
         ILogger<TelegramBotService> logger)
     {
         _videoProcessor = videoProcessor;
         _youTubeUploader = youTubeUploader;
         _googleSheetsLogger = googleSheetsLogger;
         _processingQueue = processingQueue;
+        _thumbnailGenerator = thumbnailGenerator;
         _logger = logger;
         _telegramOptions = options;
         _publishingOptions = publishingOptions;
@@ -843,8 +848,9 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
             await _botClient.EditMessageText(chatId, msgId, finalTxt, parseMode: ParseMode.Html, cancellationToken: ct);
 
-            foreach (var res in results)
+            for (var index = 0; index < results.Count; index++)
             {
+                var res = results[index];
                 var absoluteLocalPath = Path.GetFullPath(res.OutputPath);
                 var fileName = Path.GetFileName(absoluteLocalPath) ?? absoluteLocalPath;
                 var resultUrl = BuildPublicResultUrl(fileName);
@@ -860,14 +866,14 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                     res.SizeBytes,
                     res.Summary);
 
-                var message = await _botClient.SendMessage(
-                    chatId,
-                    BuildResultMessage(context),
-                    parseMode: ParseMode.Html,
-                    replyMarkup: BuildResultKeyboard(context),
-                    cancellationToken: ct);
+                var message = await SendResultCardAsync(chatId, context, ct);
 
                 _publishedResultsByMessageId[message.MessageId] = context;
+
+                if (index < results.Count - 1)
+                {
+                    await Task.Delay(ResultCardThrottleDelay, ct);
+                }
             }
         }
         catch (Exception ex)
@@ -897,16 +903,104 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
         if (!string.IsNullOrWhiteSpace(context.PublicUrl) && IsTelegramSafeButtonUrl(context.PublicUrl))
         {
-            buttons.Add([InlineKeyboardButton.WithUrl("🔗 Відкрити результат", context.PublicUrl)]);
+            buttons.Add([InlineKeyboardButton.WithUrl("Смотреть", context.PublicUrl)]);
         }
 
-        buttons.Add(
-        [
-            InlineKeyboardButton.WithCallbackData("📤 Опублікувати на YouTube", $"{PublishResultPrefix}publish"),
-            InlineKeyboardButton.WithCallbackData("❌ Скасувати", $"{PublishResultPrefix}cancel")
-        ]);
+        buttons.Add([InlineKeyboardButton.WithCallbackData("📤 Опублікувати на YouTube", $"{PublishResultPrefix}publish")]);
 
         return new InlineKeyboardMarkup(buttons);
+    }
+
+    private async Task<Message> SendResultCardAsync(long chatId, PublishedResultContext context, CancellationToken ct)
+    {
+        var caption = BuildResultMessage(context);
+        var keyboard = BuildResultKeyboard(context);
+        string? thumbPath = null;
+
+        try
+        {
+            thumbPath = await _thumbnailGenerator.TryGenerateAsync(context.ResultFilePath, ct);
+            if (!string.IsNullOrWhiteSpace(thumbPath) && File.Exists(thumbPath))
+            {
+                try
+                {
+                    await using var stream = new FileStream(thumbPath, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, useAsync: true);
+                    var input = InputFile.FromStream(stream, Path.GetFileName(thumbPath));
+
+                    return await ExecuteWithRateLimitRetryAsync(
+                        () => _botClient.SendPhoto(
+                            chatId,
+                            photo: input,
+                            caption: caption,
+                            parseMode: ParseMode.Html,
+                            replyMarkup: keyboard,
+                            cancellationToken: ct),
+                        ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Failed to send thumbnail card for {FileName}; falling back to text.", context.ResultFileName);
+                }
+            }
+
+            return await ExecuteWithRateLimitRetryAsync(
+                () => _botClient.SendMessage(
+                    chatId,
+                    caption,
+                    parseMode: ParseMode.Html,
+                    replyMarkup: keyboard,
+                    cancellationToken: ct),
+                ct);
+        }
+        finally
+        {
+            TryDeleteQuietly(thumbPath);
+        }
+    }
+
+    private async Task<T> ExecuteWithRateLimitRetryAsync<T>(Func<Task<T>> action, CancellationToken ct)
+    {
+        const int maxAttempts = 3;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                return await action();
+            }
+            catch (ApiRequestException ex) when (ex.ErrorCode == 429 && attempt < maxAttempts)
+            {
+                var retryAfterSeconds = ex.Parameters?.RetryAfter ?? 2 * attempt;
+                _logger.LogDebug(
+                    ex,
+                    "Telegram flood control (429). Retrying after {RetryAfterSeconds}s (attempt {Attempt}/{MaxAttempts}).",
+                    retryAfterSeconds,
+                    attempt,
+                    maxAttempts);
+                await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(retryAfterSeconds, 1, 60)), ct);
+            }
+        }
+
+        throw new InvalidOperationException("Failed to execute Telegram API call after retries.");
+    }
+
+    private static void TryDeleteQuietly(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
+            // Best effort cleanup.
+        }
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)
