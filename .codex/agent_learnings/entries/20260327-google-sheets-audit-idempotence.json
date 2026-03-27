@@ -1,0 +1,10 @@
+{
+  "ts_utc": "2026-03-27T16:45:00Z",
+  "category": "decision-pattern",
+  "issue": "17",
+  "text": "For the Google Sheets audit tab, treat formatting as part of the log schema and make it idempotent.\nResolve the sheet by title, recreate the tab if missing, and replace conditional formatting rules instead of layering new ones.\nThis keeps repeated uploads stable and prevents duplicate UI rules from accumulating over time.",
+  "pointers": [
+    "TubePilot/TubePilot.Infrastructure/GoogleSheets/GoogleSheetsLogger.cs",
+    "TubePilot/TubePilot.Infrastructure/GoogleSheets/GoogleSheetsAuditSheet.cs"
+  ]
+}
