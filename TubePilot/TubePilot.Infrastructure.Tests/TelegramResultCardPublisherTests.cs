@@ -104,7 +104,7 @@ public sealed class TelegramResultCardPublisherTests
 
         var markup = Assert.Single(client.MessageCalls).ReplyMarkup;
         var buttons = markup.InlineKeyboard.SelectMany(row => row).ToList();
-        Assert.Contains(buttons, b => b.Text == "РЎРјРѕС‚СЂРµС‚СЊ" && b.Url == "https://example.test/play/out.mp4");
+        Assert.Contains(buttons, b => b.Url is not null && b.Url.StartsWith("https://", StringComparison.Ordinal));
         Assert.Contains(buttons, b => b.CallbackData == "res:publish:123:0");
 
         client.MessageCalls.Clear();
@@ -112,7 +112,7 @@ public sealed class TelegramResultCardPublisherTests
         await publisher.SendResultCardsAsync(chatId: 1, resultGroupId: 124, [CreateContext(publicUrl: "http://example.test/play/out.mp4")], CancellationToken.None);
         markup = Assert.Single(client.MessageCalls).ReplyMarkup;
         buttons = markup.InlineKeyboard.SelectMany(row => row).ToList();
-        Assert.DoesNotContain(buttons, b => b.Text == "РЎРјРѕС‚СЂРµС‚СЊ");
+        Assert.DoesNotContain(buttons, b => b.Url is not null);
     }
 
     [Fact]

@@ -52,7 +52,7 @@ internal static class PublishingScheduleHelper
 
         if (string.IsNullOrWhiteSpace(input))
         {
-            errorMessage = "Р’РІРµРґРё РґР°С‚Сѓ С– С‡Р°СЃ Сѓ С„РѕСЂРјР°С‚С– YYYY-MM-DD HH:mm.";
+            errorMessage = "Введи дату і час у форматі YYYY-MM-DD HH:mm.";
             return false;
         }
 
@@ -63,7 +63,7 @@ internal static class PublishingScheduleHelper
                 DateTimeStyles.None,
                 out var localDateTime))
         {
-            errorMessage = "РќРµ РјРѕР¶Сѓ РїСЂРѕС‡РёС‚Р°С‚Рё РґР°С‚Сѓ. Р¤РѕСЂРјР°С‚ РјР°С” Р±СѓС‚Рё YYYY-MM-DD HH:mm.";
+            errorMessage = "Не можу прочитати дату. Формат має бути YYYY-MM-DD HH:mm.";
             return false;
         }
 
@@ -74,7 +74,7 @@ internal static class PublishingScheduleHelper
 
         if (scheduledPublishAtUtc <= utcNow.AddMinutes(2))
         {
-            errorMessage = "Р”Р°С‚Р° С– С‡Р°СЃ РјР°СЋС‚СЊ Р±СѓС‚Рё РІ РјР°Р№Р±СѓС‚РЅСЊРѕРјСѓ. РЎРїСЂРѕР±СѓР№ С‰Рµ СЂР°Р·.";
+            errorMessage = "Дата і час мають бути в майбутньому. Спробуй ще раз.";
             scheduledPublishAtUtc = default;
             return false;
         }
@@ -140,7 +140,7 @@ internal static class PublishingScheduleHelper
     {
         if (scheduledPublishAtUtc is null)
         {
-            return "рџљЂ Р—Р°СЂР°Р·";
+            return "\U0001F680 Зараз";
         }
 
         var timeZone = ResolveTimeZone(timeZoneId);

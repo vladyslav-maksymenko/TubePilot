@@ -48,13 +48,13 @@ internal sealed class TelegramResultCardPublisher(
 
         if (!string.IsNullOrWhiteSpace(context.PublicUrl) && TelegramUrlSafety.IsTelegramSafeButtonUrl(context.PublicUrl))
         {
-            buttons.Add([InlineKeyboardButton.WithUrl("РЎРјРѕС‚СЂРµС‚СЊ", context.PublicUrl)]);
+            buttons.Add([new InlineKeyboardButton("\u25B6\uFE0F Дивитись") { Url = context.PublicUrl }]);
         }
 
         buttons.Add(
         [
             InlineKeyboardButton.WithCallbackData(
-                "рџ“¤ РћРїСѓР±Р»С–РєСѓРІР°С‚Рё РЅР° YouTube",
+                "\U0001F4E4 Опублікувати на YouTube",
                 $"{TelegramBotService.PublishResultPrefix}publish:{resultGroupId}:{resultIndex}")
         ]);
 
@@ -63,7 +63,7 @@ internal sealed class TelegramResultCardPublisher(
             buttons.Add(
             [
                 InlineKeyboardButton.WithCallbackData(
-                    "рџ“¦ Publish ALL segments",
+                    "\U0001F4E6 Publish ALL segments",
                     $"{TelegramBotService.PublishResultPrefix}publish-all:{resultGroupId}")
             ]);
         }
