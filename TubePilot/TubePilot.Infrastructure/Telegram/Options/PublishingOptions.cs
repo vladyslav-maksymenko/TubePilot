@@ -15,5 +15,5 @@ public sealed record PublishingOptions
     /// <summary>
     /// Channel names shown in the Telegram publish wizard.
     /// </summary>
-    public IReadOnlyList<string> YouTubeChannels { get; init; } = ["Default"];
+    public IReadOnlyList<string> YouTubeChannels { get; init; } = [];
 }

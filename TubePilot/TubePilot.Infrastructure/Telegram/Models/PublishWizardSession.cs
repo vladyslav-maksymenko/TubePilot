@@ -13,6 +13,8 @@ internal sealed class PublishWizardSession(IReadOnlyList<PublishedResultContext>
 
     public PublishWizardStep Step { get; set; } = PublishWizardStep.WaitingForChannel;
 
+    public IReadOnlyList<string> AvailableChannels { get; set; } = [];
+
     public string ChannelName { get; set; } = string.Empty;
 
     public string Title { get; set; } = string.Empty;

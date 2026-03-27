@@ -55,6 +55,7 @@ public static class ServiceCollectionExtensions
         services.AddHttpClient();
         services.AddHttpClient<OAuthRefreshTokenAccessTokenProvider>(client => client.Timeout = TimeSpan.FromSeconds(30));
         services.AddSingleton<IYouTubeAccessTokenProvider>(sp => sp.GetRequiredService<OAuthRefreshTokenAccessTokenProvider>());
+        services.AddHttpClient<IYouTubeChannelLookup, YouTubeChannelLookup>(client => client.Timeout = TimeSpan.FromSeconds(30));
         services.AddHttpClient<IYouTubeUploader, YouTubeUploader>(client => client.Timeout = Timeout.InfiniteTimeSpan);
         
         services.AddSingleton<TelegramBotService>();

@@ -13,6 +13,7 @@ using Telegram.Bot.Types.ReplyMarkups;
 using TubePilot.Core.Contracts;
 using TubePilot.Infrastructure.Telegram.Models;
 using TubePilot.Infrastructure.Telegram.Options;
+using TubePilot.Infrastructure.YouTube;
 using TubePilot.Infrastructure.YouTube.Options;
 using DriveFile = TubePilot.Core.Domain.DriveFile;
 
@@ -29,6 +30,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     private readonly IVideoProcessor _videoProcessor;
     private readonly IYouTubeUploader _youTubeUploader;
     private readonly IGoogleSheetsLogger _googleSheetsLogger;
+    private readonly IYouTubeChannelLookup _youTubeChannelLookup;
     private readonly TelegramProcessingQueue _processingQueue;
     private readonly TelegramResultCardPublisher _resultCardPublisher;
     private readonly ITelegramResultThumbnailGenerator _thumbnailGenerator;
@@ -71,6 +73,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         IVideoProcessor videoProcessor,
         IYouTubeUploader youTubeUploader,
         IGoogleSheetsLogger googleSheetsLogger,
+        IYouTubeChannelLookup youTubeChannelLookup,
         TelegramProcessingQueue processingQueue,
         TelegramResultCardPublisher resultCardPublisher,
         ITelegramResultThumbnailGenerator thumbnailGenerator,
@@ -80,6 +83,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         _videoProcessor = videoProcessor;
         _youTubeUploader = youTubeUploader;
         _googleSheetsLogger = googleSheetsLogger;
+        _youTubeChannelLookup = youTubeChannelLookup;
         _processingQueue = processingQueue;
         _resultCardPublisher = resultCardPublisher;
         _thumbnailGenerator = thumbnailGenerator;
@@ -505,7 +509,11 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             }
 
             var indexText = action["channel:".Length..];
-            var channels = _publishingOptions.CurrentValue.YouTubeChannels;
+            var channels = session.AvailableChannels;
+            if (channels.Count == 0)
+            {
+                channels = ResolveConfiguredChannels();
+            }
             if (!int.TryParse(indexText, out var channelIndex) ||
                 channelIndex < 0 ||
                 channelIndex >= channels.Count)
@@ -694,11 +702,8 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     {
         session.Step = PublishWizardStep.WaitingForChannel;
 
-        var channels = _publishingOptions.CurrentValue.YouTubeChannels;
-        if (channels.Count == 0)
-        {
-            channels = ["Default"];
-        }
+        var channels = await ResolveChannelChoicesAsync(ct);
+        session.AvailableChannels = channels;
 
         var rows = new List<InlineKeyboardButton[]>(channels.Count + 1);
         for (var index = 0; index < channels.Count; index++)
@@ -714,6 +719,37 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             replyMarkup: new InlineKeyboardMarkup(rows),
             ct: ct);
     }
+
+    private async Task<IReadOnlyList<string>> ResolveChannelChoicesAsync(CancellationToken ct)
+    {
+        try
+        {
+            var channels = await _youTubeChannelLookup.GetChannelsAsync(ct);
+            var titles = channels
+                .Select(c => c.Title)
+                .Where(t => !string.IsNullOrWhiteSpace(t))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            if (titles.Length > 0)
+            {
+                return titles;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to resolve YouTube channels from API; falling back to configured list.");
+        }
+
+        var configured = ResolveConfiguredChannels();
+        return configured.Count == 0 ? ["Default"] : configured;
+    }
+
+    private IReadOnlyList<string> ResolveConfiguredChannels()
+        => (_publishingOptions.CurrentValue.YouTubeChannels ?? [])
+            .Where(c => !string.IsNullOrWhiteSpace(c))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
 
     private async Task SendTitlePromptAsync(PublishWizardSession session, CancellationToken ct)
     {

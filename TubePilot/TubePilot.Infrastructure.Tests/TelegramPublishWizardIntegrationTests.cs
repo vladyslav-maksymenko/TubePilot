@@ -9,6 +9,7 @@ using TubePilot.Core.Contracts;
 using TubePilot.Infrastructure.Telegram;
 using TubePilot.Infrastructure.Telegram.Models;
 using TubePilot.Infrastructure.Telegram.Options;
+using TubePilot.Infrastructure.YouTube;
 using TubePilot.Infrastructure.YouTube.Options;
 
 namespace TubePilot.Infrastructure.Tests;
@@ -291,11 +292,18 @@ public sealed class TelegramPublishWizardIntegrationTests
             new FakeVideoProcessor(),
             youTubeUploader,
             sheetsLogger,
+            new FakeYouTubeChannelLookup(),
             processingQueue,
             resultCardPublisher,
             new FakeThumbnailGenerator(),
             timeProvider,
             NullLogger<TelegramBotService>.Instance);
+    }
+
+    private sealed class FakeYouTubeChannelLookup : IYouTubeChannelLookup
+    {
+        public Task<IReadOnlyList<YouTubeChannelInfo>> GetChannelsAsync(CancellationToken ct)
+            => Task.FromResult<IReadOnlyList<YouTubeChannelInfo>>([]);
     }
 
     private static PublishedResultContext CreateResult(int partNumber, int totalParts)
