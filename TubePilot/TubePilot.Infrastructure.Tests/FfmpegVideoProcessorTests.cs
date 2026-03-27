@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using TubePilot.Core.Contracts;
@@ -71,6 +72,55 @@ public sealed class FfmpegVideoProcessorTests
     }
 
     [Fact]
+    public async Task ProcessAsync_SliceAutoModeProducesMultipleSegmentsWithinRange()
+    {
+        var inputPath = CreateInputFile();
+        var processedDir = CreateTempDirectory();
+        var runner = new RecordingFfmpegRunner(
+            new FfmpegProbeResult(1000d, 1920, 1080, HasVideo: true, HasAudio: true));
+        var processor = CreateProcessor(processedDir, runner);
+
+        var outputs = await processor.ProcessAsync(inputPath, new HashSet<string> { "slice" }, _ => Task.CompletedTask);
+
+        Assert.True(outputs.Count > 1);
+        Assert.Equal(outputs.Count, runner.RunCalls.Count);
+
+        for (var index = 0; index < outputs.Count; index++)
+        {
+            Assert.Equal(index + 1, outputs[index].PartNumber);
+            Assert.Equal(outputs.Count, outputs[index].TotalParts);
+            Assert.Contains("_part", Path.GetFileName(outputs[index].OutputPath), StringComparison.OrdinalIgnoreCase);
+        }
+
+        foreach (var runCall in runner.RunCalls)
+        {
+            var durationSeconds = GetFlagValueAsDouble(runCall.Arguments, "-t");
+            Assert.InRange(durationSeconds, 150d, 190d);
+        }
+    }
+
+    [Fact]
+    public async Task ProcessAsync_SliceLongAutoModeProducesMultipleSegmentsWithinRange()
+    {
+        var inputPath = CreateInputFile();
+        var processedDir = CreateTempDirectory();
+        var runner = new RecordingFfmpegRunner(
+            new FfmpegProbeResult(2000d, 1920, 1080, HasVideo: true, HasAudio: true));
+        var processor = CreateProcessor(processedDir, runner);
+
+        var outputs = await processor.ProcessAsync(inputPath, new HashSet<string> { "slice_long" }, _ => Task.CompletedTask);
+
+        Assert.True(outputs.Count > 1);
+        Assert.Equal(outputs.Count, runner.RunCalls.Count);
+
+        foreach (var runCall in runner.RunCalls)
+        {
+            var durationSeconds = GetFlagValueAsDouble(runCall.Arguments, "-t");
+            Assert.InRange(durationSeconds, 310d, 430d);
+        }
+    }
+
+    [Fact]
     public async Task ProcessAsync_MissingInputThrowsBeforeProbe()
     {
         var processedDir = CreateTempDirectory();
@@ -132,6 +182,14 @@ public sealed class FfmpegVideoProcessorTests
         var path = Path.Combine(Path.GetTempPath(), $"TubePilot_{Guid.NewGuid():N}");
         Directory.CreateDirectory(path);
         return path;
+    }
+
+    private static double GetFlagValueAsDouble(string[] arguments, string flag)
+    {
+        var index = Array.IndexOf(arguments, flag);
+        Assert.True(index >= 0, $"Expected '{flag}' in arguments.");
+        Assert.True(index + 1 < arguments.Length, $"Expected a value after '{flag}'.");
+        return double.Parse(arguments[index + 1], CultureInfo.InvariantCulture);
     }
 }
 
