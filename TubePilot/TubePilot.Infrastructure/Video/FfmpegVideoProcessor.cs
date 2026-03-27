@@ -593,20 +593,31 @@ internal sealed class FfmpegVideoProcessor(
     {
         var minSliceDuration = useLongSlice ? 310d : 150d;
         var maxSliceDuration = useLongSlice ? 430d : 190d;
-        var minimumRemainingDuration = useLongSlice ? 60d : 30d;
 
         var slices = new List<(double StartSeconds, double DurationSeconds)>();
         var startSeconds = 0d;
         while (startSeconds < durationSeconds)
         {
             var remainingDuration = durationSeconds - startSeconds;
-            if (remainingDuration < minimumRemainingDuration)
+            if (remainingDuration < minSliceDuration)
             {
                 break;
             }
 
-            var sliceDuration = Random.Shared.NextDouble() * (maxSliceDuration - minSliceDuration) + minSliceDuration;
-            sliceDuration = Math.Min(sliceDuration, remainingDuration);
+            if (remainingDuration <= maxSliceDuration)
+            {
+                slices.Add((startSeconds, remainingDuration));
+                break;
+            }
+
+            var maxPickDuration = Math.Min(maxSliceDuration, remainingDuration - minSliceDuration);
+            if (maxPickDuration < minSliceDuration)
+            {
+                slices.Add((startSeconds, maxSliceDuration));
+                break;
+            }
+
+            var sliceDuration = Random.Shared.NextDouble() * (maxPickDuration - minSliceDuration) + minSliceDuration;
             slices.Add((startSeconds, sliceDuration));
             startSeconds += sliceDuration;
         }
