@@ -44,6 +44,11 @@ public sealed class TelegramPublishWizardIntegrationTests
         await service.HandleUpdateAsync(botClient, CreateCallbackUpdate(chatId, msgId: 500, data: "pw:confirm"), CancellationToken.None);
         await service.DebugWaitForActivePublishJobAsync(chatId);
 
+        var zeroProgressUpdates = ui.EditMessageTextCalls.Count(c =>
+            c.Text.Contains("upload to YouTube", StringComparison.Ordinal) &&
+            c.Text.Contains("] 0%</code>", StringComparison.Ordinal));
+        Assert.Equal(1, zeroProgressUpdates);
+
         Assert.Single(uploader.Requests);
         Assert.Equal("My Title", uploader.Requests[0].Title);
         Assert.Equal("My Description", uploader.Requests[0].Description);

@@ -1,4 +1,5 @@
 using Telegram.Bot;
+using Telegram.Bot.Exceptions;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
 
@@ -6,6 +7,10 @@ namespace TubePilot.Infrastructure.Telegram;
 
 internal sealed class TelegramUiClient(ITelegramBotClient botClient) : ITelegramUiClient
 {
+    private static bool IsMessageNotModified(ApiRequestException ex)
+        => ex.ErrorCode == 400 &&
+           ex.Message.Contains("message is not modified", StringComparison.OrdinalIgnoreCase);
+
     public async Task<int> SendMessageAsync(
         long chatId,
         string text,
@@ -30,11 +35,25 @@ internal sealed class TelegramUiClient(ITelegramBotClient botClient) : ITelegram
     {
         if (parseMode is null)
         {
-            _ = await botClient.EditMessageText(chatId, messageId, text, replyMarkup: replyMarkup, cancellationToken: ct);
+            try
+            {
+                _ = await botClient.EditMessageText(chatId, messageId, text, replyMarkup: replyMarkup, cancellationToken: ct);
+            }
+            catch (ApiRequestException ex) when (IsMessageNotModified(ex))
+            {
+                // Benign: happens when we attempt to re-apply identical text/markup (race/double callbacks).
+            }
             return;
         }
 
-        _ = await botClient.EditMessageText(chatId, messageId, text, parseMode: parseMode.Value, replyMarkup: replyMarkup, cancellationToken: ct);
+        try
+        {
+            _ = await botClient.EditMessageText(chatId, messageId, text, parseMode: parseMode.Value, replyMarkup: replyMarkup, cancellationToken: ct);
+        }
+        catch (ApiRequestException ex) when (IsMessageNotModified(ex))
+        {
+            // Benign: happens when we attempt to re-apply identical text/markup (race/double callbacks).
+        }
     }
 
     public Task AnswerCallbackQueryAsync(

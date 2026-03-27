@@ -894,6 +894,10 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 ct: ct);
             session.ProgressMessageId = messageId;
         }
+        
+        // The uploader itself reports initial progress (0%) right away.
+        // Mark it as reported to avoid duplicate edits that Telegram rejects with "message is not modified".
+        session.LastProgressPercent = 0;
 
         var job = RunUploadJobAsync(session, linkedCts.Token);
         _activePublishJobsByChatId[session.ChatId] = job;
