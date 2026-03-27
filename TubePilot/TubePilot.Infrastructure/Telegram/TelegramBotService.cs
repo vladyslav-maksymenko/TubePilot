@@ -20,7 +20,7 @@ namespace TubePilot.Infrastructure.Telegram;
 internal sealed class TelegramBotService : BackgroundService, ITelegramBotService
 {
     private const string SubscriberFile = "telegram_subscriber.txt";
-    private const string PublishResultPrefix = "res:";
+    internal const string PublishResultPrefix = "res:";
     private const string PublishWizardPrefix = "pw:";
 
     private readonly ITelegramBotClient _botClient;
@@ -28,7 +28,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     private readonly IYouTubeUploader _youTubeUploader;
     private readonly IGoogleSheetsLogger _googleSheetsLogger;
     private readonly TelegramProcessingQueue _processingQueue;
-    private readonly TelegramResultThumbnailGenerator _thumbnailGenerator;
+    private readonly TelegramResultCardPublisher _resultCardPublisher;
     private readonly ILogger<TelegramBotService> _logger;
     private readonly IOptionsMonitor<TelegramOptions> _telegramOptions;
     private readonly IOptionsMonitor<PublishingOptions> _publishingOptions;
@@ -55,37 +55,28 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         { "downscale_1080p", "\U0001F4D0 Даунскейл 1080p" }
     };
 
-    private static readonly TimeSpan ResultCardThrottleDelay = TimeSpan.FromMilliseconds(1500);
-
     public TelegramBotService(
         IOptionsMonitor<TelegramOptions> options,
         IOptionsMonitor<PublishingOptions> publishingOptions,
         IOptionsMonitor<YouTubeOptions> youTubeOptions,
+        ITelegramBotClient botClient,
         IVideoProcessor videoProcessor,
         IYouTubeUploader youTubeUploader,
         IGoogleSheetsLogger googleSheetsLogger,
         TelegramProcessingQueue processingQueue,
-        TelegramResultThumbnailGenerator thumbnailGenerator,
+        TelegramResultCardPublisher resultCardPublisher,
         ILogger<TelegramBotService> logger)
     {
         _videoProcessor = videoProcessor;
         _youTubeUploader = youTubeUploader;
         _googleSheetsLogger = googleSheetsLogger;
         _processingQueue = processingQueue;
-        _thumbnailGenerator = thumbnailGenerator;
+        _resultCardPublisher = resultCardPublisher;
         _logger = logger;
         _telegramOptions = options;
         _publishingOptions = publishingOptions;
         _youTubeOptions = youTubeOptions;
-
-        var token = options.CurrentValue.BotToken;
-        if (string.IsNullOrWhiteSpace(token))
-        {
-            _logger.LogCritical("Telegram Bot Token is missing in secrets.json!");
-            throw new ArgumentException("Telegram Bot Token is required to start the service.");
-        }
-
-        _botClient = new TelegramBotClient(token);
+        _botClient = botClient;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -848,6 +839,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
             await _botClient.EditMessageText(chatId, msgId, finalTxt, parseMode: ParseMode.Html, cancellationToken: ct);
 
+            var contexts = new List<PublishedResultContext>(results.Count);
             for (var index = 0; index < results.Count; index++)
             {
                 var res = results[index];
@@ -866,14 +858,13 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                     res.SizeBytes,
                     res.Summary);
 
-                var message = await SendResultCardAsync(chatId, context, ct);
+                contexts.Add(context);
+            }
 
-                _publishedResultsByMessageId[message.MessageId] = context;
-
-                if (index < results.Count - 1)
-                {
-                    await Task.Delay(ResultCardThrottleDelay, ct);
-                }
+            var messages = await _resultCardPublisher.SendResultCardsAsync(chatId, contexts, ct);
+            for (var index = 0; index < messages.Count; index++)
+            {
+                _publishedResultsByMessageId[messages[index].MessageId] = contexts[index];
             }
         }
         catch (Exception ex)
@@ -892,115 +883,6 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     {
         var baseUrl = _telegramOptions.CurrentValue.BaseUrl?.TrimEnd('/') ?? string.Empty;
         return TelegramResultLinks.BuildPublicResultUrl(baseUrl, fileName);
-    }
-
-    private static string BuildResultMessage(PublishedResultContext context)
-        => TelegramSegmentResultMessageBuilder.BuildResultMessage(context);
-
-    private static InlineKeyboardMarkup BuildResultKeyboard(PublishedResultContext context)
-    {
-        var buttons = new List<IEnumerable<InlineKeyboardButton>>();
-
-        if (!string.IsNullOrWhiteSpace(context.PublicUrl) && IsTelegramSafeButtonUrl(context.PublicUrl))
-        {
-            buttons.Add([InlineKeyboardButton.WithUrl("Смотреть", context.PublicUrl)]);
-        }
-
-        buttons.Add([InlineKeyboardButton.WithCallbackData("📤 Опублікувати на YouTube", $"{PublishResultPrefix}publish")]);
-
-        return new InlineKeyboardMarkup(buttons);
-    }
-
-    private async Task<Message> SendResultCardAsync(long chatId, PublishedResultContext context, CancellationToken ct)
-    {
-        var caption = BuildResultMessage(context);
-        var keyboard = BuildResultKeyboard(context);
-        string? thumbPath = null;
-
-        try
-        {
-            thumbPath = await _thumbnailGenerator.TryGenerateAsync(context.ResultFilePath, ct);
-            if (!string.IsNullOrWhiteSpace(thumbPath) && File.Exists(thumbPath))
-            {
-                try
-                {
-                    await using var stream = new FileStream(thumbPath, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, useAsync: true);
-                    var input = InputFile.FromStream(stream, Path.GetFileName(thumbPath));
-
-                    return await ExecuteWithRateLimitRetryAsync(
-                        () => _botClient.SendPhoto(
-                            chatId,
-                            photo: input,
-                            caption: caption,
-                            parseMode: ParseMode.Html,
-                            replyMarkup: keyboard,
-                            cancellationToken: ct),
-                        ct);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogDebug(ex, "Failed to send thumbnail card for {FileName}; falling back to text.", context.ResultFileName);
-                }
-            }
-
-            return await ExecuteWithRateLimitRetryAsync(
-                () => _botClient.SendMessage(
-                    chatId,
-                    caption,
-                    parseMode: ParseMode.Html,
-                    replyMarkup: keyboard,
-                    cancellationToken: ct),
-                ct);
-        }
-        finally
-        {
-            TryDeleteQuietly(thumbPath);
-        }
-    }
-
-    private async Task<T> ExecuteWithRateLimitRetryAsync<T>(Func<Task<T>> action, CancellationToken ct)
-    {
-        const int maxAttempts = 3;
-        for (var attempt = 1; attempt <= maxAttempts; attempt++)
-        {
-            try
-            {
-                return await action();
-            }
-            catch (ApiRequestException ex) when (ex.ErrorCode == 429 && attempt < maxAttempts)
-            {
-                var retryAfterSeconds = ex.Parameters?.RetryAfter ?? 2 * attempt;
-                _logger.LogDebug(
-                    ex,
-                    "Telegram flood control (429). Retrying after {RetryAfterSeconds}s (attempt {Attempt}/{MaxAttempts}).",
-                    retryAfterSeconds,
-                    attempt,
-                    maxAttempts);
-                await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(retryAfterSeconds, 1, 60)), ct);
-            }
-        }
-
-        throw new InvalidOperationException("Failed to execute Telegram API call after retries.");
-    }
-
-    private static void TryDeleteQuietly(string? path)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return;
-        }
-
-        try
-        {
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
-        }
-        catch
-        {
-            // Best effort cleanup.
-        }
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)
@@ -1028,28 +910,5 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
     private static string H(string text) => WebUtility.HtmlEncode(text);
 
-    private static bool IsTelegramSafeButtonUrl(string url)
-    {
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
-        {
-            return false;
-        }
 
-        if (uri.Scheme is not ("http" or "https"))
-        {
-            return false;
-        }
-
-        if (uri.IsLoopback)
-        {
-            return false;
-        }
-
-        if (IPAddress.TryParse(uri.Host, out var ip) && IPAddress.IsLoopback(ip))
-        {
-            return false;
-        }
-
-        return true;
-    }
 }

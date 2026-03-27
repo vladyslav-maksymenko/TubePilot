@@ -3,7 +3,7 @@ using Microsoft.Extensions.Logging;
 
 namespace TubePilot.Infrastructure.Telegram;
 
-internal sealed class TelegramResultThumbnailGenerator(ILogger<TelegramResultThumbnailGenerator> logger)
+internal sealed class TelegramResultThumbnailGenerator(ILogger<TelegramResultThumbnailGenerator> logger) : ITelegramResultThumbnailGenerator
 {
     public async Task<string?> TryGenerateAsync(string videoPath, CancellationToken ct)
     {
@@ -129,4 +129,3 @@ internal sealed class TelegramResultThumbnailGenerator(ILogger<TelegramResultThu
         }
     }
 }
-
