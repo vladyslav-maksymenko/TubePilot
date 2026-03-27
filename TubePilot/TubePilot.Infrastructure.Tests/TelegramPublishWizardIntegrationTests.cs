@@ -404,10 +404,11 @@ public sealed class TelegramPublishWizardIntegrationTests
             long chatId,
             string text,
             ParseMode? parseMode = null,
+            int? replyToMessageId = null,
             InlineKeyboardMarkup? replyMarkup = null,
             CancellationToken ct = default)
         {
-            SendMessageCalls.Add(new SendMessageCall(chatId, text, parseMode, replyMarkup));
+            SendMessageCalls.Add(new SendMessageCall(chatId, text, parseMode, replyToMessageId, replyMarkup));
             return Task.FromResult(Interlocked.Increment(ref _messageIdCounter));
         }
 
@@ -433,7 +434,7 @@ public sealed class TelegramPublishWizardIntegrationTests
             return Task.CompletedTask;
         }
 
-        public sealed record SendMessageCall(long ChatId, string Text, ParseMode? ParseMode, InlineKeyboardMarkup? ReplyMarkup);
+        public sealed record SendMessageCall(long ChatId, string Text, ParseMode? ParseMode, int? ReplyToMessageId, InlineKeyboardMarkup? ReplyMarkup);
         public sealed record EditMessageTextCall(long ChatId, int MessageId, string Text, ParseMode? ParseMode, InlineKeyboardMarkup? ReplyMarkup);
         public sealed record AnswerCallbackQueryCall(string Id, string? Text, bool ShowAlert);
     }

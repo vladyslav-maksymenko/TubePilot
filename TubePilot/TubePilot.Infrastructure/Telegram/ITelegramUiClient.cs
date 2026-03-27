@@ -9,6 +9,7 @@ internal interface ITelegramUiClient
         long chatId,
         string text,
         ParseMode? parseMode = null,
+        int? replyToMessageId = null,
         InlineKeyboardMarkup? replyMarkup = null,
         CancellationToken ct = default);
 

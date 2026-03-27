@@ -1,5 +1,6 @@
 using Telegram.Bot;
 using Telegram.Bot.Exceptions;
+using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
 
@@ -15,12 +16,23 @@ internal sealed class TelegramUiClient(ITelegramBotClient botClient) : ITelegram
         long chatId,
         string text,
         ParseMode? parseMode = null,
+        int? replyToMessageId = null,
         InlineKeyboardMarkup? replyMarkup = null,
         CancellationToken ct = default)
     {
+        ReplyParameters? replyParameters = null;
+        if (replyToMessageId is not null && replyToMessageId.Value > 0)
+        {
+            replyParameters = new ReplyParameters
+            {
+                MessageId = replyToMessageId.Value,
+                AllowSendingWithoutReply = true
+            };
+        }
+
         var message = parseMode is null
-            ? await botClient.SendMessage(chatId, text, replyMarkup: replyMarkup, cancellationToken: ct)
-            : await botClient.SendMessage(chatId, text, parseMode: parseMode.Value, replyMarkup: replyMarkup, cancellationToken: ct);
+            ? await botClient.SendMessage(chatId, text, replyParameters: replyParameters, replyMarkup: replyMarkup, cancellationToken: ct)
+            : await botClient.SendMessage(chatId, text, parseMode: parseMode.Value, replyParameters: replyParameters, replyMarkup: replyMarkup, cancellationToken: ct);
 
         return message.MessageId;
     }

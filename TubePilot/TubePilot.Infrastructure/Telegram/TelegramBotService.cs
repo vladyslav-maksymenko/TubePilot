@@ -407,6 +407,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 }
 
                 var session = new PublishWizardSession([resultContext], chatId);
+                session.ReplyToMessageId = msgId;
                 _publishSessionsByChatId[chatId] = session;
                 await _ui.AnswerCallbackQueryAsync(query.Id, ct: ct);
                 await SendChannelPromptAsync(session, ct);
@@ -444,6 +445,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                     .ToArray();
 
                 var bulkSession = new PublishWizardSession(orderedContexts, chatId);
+                bulkSession.ReplyToMessageId = msgId;
                 _publishSessionsByChatId[chatId] = bulkSession;
                 await _ui.AnswerCallbackQueryAsync(query.Id, ct: ct);
                 await SendChannelPromptAsync(bulkSession, ct);
@@ -661,13 +663,13 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         switch (session.Step)
         {
             case PublishWizardStep.WaitingForChannel:
-                await _ui.SendMessageAsync(session.ChatId, "Обери канал кнопкою нижче або /cancel.", ct: ct);
+                await _ui.SendMessageAsync(session.ChatId, "Обери канал кнопкою нижче або /cancel.", replyToMessageId: session.ReplyToMessageId, ct: ct);
                 return;
 
             case PublishWizardStep.WaitingForTitle:
                 if (string.IsNullOrWhiteSpace(text))
                 {
-                    await _ui.SendMessageAsync(session.ChatId, "Заголовок не може бути порожнім. Введи його ще раз:", ct: ct);
+                    await _ui.SendMessageAsync(session.ChatId, "Заголовок не може бути порожнім. Введи його ще раз:", replyToMessageId: session.ReplyToMessageId, ct: ct);
                     return;
                 }
 
@@ -676,7 +678,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                     var template = text.Trim();
                     if (!template.Contains("{N}", StringComparison.Ordinal))
                     {
-                        await _ui.SendMessageAsync(session.ChatId, "Шаблон має містити {N} (номер частини). Спробуй ще раз:", ct: ct);
+                        await _ui.SendMessageAsync(session.ChatId, "Шаблон має містити {N} (номер частини). Спробуй ще раз:", replyToMessageId: session.ReplyToMessageId, ct: ct);
                         return;
                     }
 
@@ -710,7 +712,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                         out var scheduledPublishAtUtc,
                         out var errorMessage))
                 {
-                    await _ui.SendMessageAsync(session.ChatId, errorMessage, ct: ct);
+                    await _ui.SendMessageAsync(session.ChatId, errorMessage, replyToMessageId: session.ReplyToMessageId, ct: ct);
                     return;
                 }
 
@@ -720,15 +722,15 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 return;
 
             case PublishWizardStep.WaitingForVisibility:
-                await _ui.SendMessageAsync(session.ChatId, "Обери visibility кнопкою нижче або /cancel.", ct: ct);
+                await _ui.SendMessageAsync(session.ChatId, "Обери visibility кнопкою нижче або /cancel.", replyToMessageId: session.ReplyToMessageId, ct: ct);
                 return;
 
             case PublishWizardStep.Confirm:
-                await _ui.SendMessageAsync(session.ChatId, "Підтверди публікацію кнопкою нижче або /cancel.", ct: ct);
+                await _ui.SendMessageAsync(session.ChatId, "Підтверди публікацію кнопкою нижче або /cancel.", replyToMessageId: session.ReplyToMessageId, ct: ct);
                 return;
 
             case PublishWizardStep.Uploading:
-                await _ui.SendMessageAsync(session.ChatId, "Upload вже триває. Дочекайся завершення.", ct: ct);
+                await _ui.SendMessageAsync(session.ChatId, "Upload вже триває. Дочекайся завершення.", replyToMessageId: session.ReplyToMessageId, ct: ct);
                 return;
 
             default:
@@ -754,6 +756,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         await _ui.SendMessageAsync(
             session.ChatId,
             "📺 Обери канал для публікації:",
+            replyToMessageId: session.ReplyToMessageId,
             replyMarkup: new InlineKeyboardMarkup(rows),
             ct: ct);
     }
@@ -809,6 +812,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             session.ChatId,
             text,
             parseMode: ParseMode.Html,
+            replyToMessageId: session.ReplyToMessageId,
             replyMarkup: new InlineKeyboardMarkup(
             [
                 [InlineKeyboardButton.WithCallbackData(useFileNameText, $"{PublishWizardPrefix}use-file-name")],
@@ -822,13 +826,13 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     private async Task SendDescriptionPromptAsync(PublishWizardSession session, CancellationToken ct)
     {
         session.Step = PublishWizardStep.WaitingForDescription;
-        await _ui.SendMessageAsync(session.ChatId, "🧾 Введи опис (Description) або /skip:", ct: ct);
+        await _ui.SendMessageAsync(session.ChatId, "🧾 Введи опис (Description) або /skip:", replyToMessageId: session.ReplyToMessageId, ct: ct);
     }
 
     private async Task SendTagsPromptAsync(PublishWizardSession session, CancellationToken ct)
     {
         session.Step = PublishWizardStep.WaitingForTags;
-        await _ui.SendMessageAsync(session.ChatId, "🏷️ Введи теги через кому або /skip:", ct: ct);
+        await _ui.SendMessageAsync(session.ChatId, "🏷️ Введи теги через кому або /skip:", replyToMessageId: session.ReplyToMessageId, ct: ct);
     }
 
     private async Task SendSchedulePromptAsync(PublishWizardSession session, CancellationToken ct)
@@ -838,6 +842,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         await _ui.SendMessageAsync(
             session.ChatId,
             "🗓️ Коли публікувати?",
+            replyToMessageId: session.ReplyToMessageId,
             replyMarkup: new InlineKeyboardMarkup(
             [
                 [InlineKeyboardButton.WithCallbackData("🚀 Зараз", $"{PublishWizardPrefix}schedule-now")],
@@ -855,6 +860,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         await _ui.SendMessageAsync(
             session.ChatId,
             "🌐 Обери visibility відео на YouTube:",
+            replyToMessageId: session.ReplyToMessageId,
             replyMarkup: new InlineKeyboardMarkup(
             [
                 [
@@ -875,6 +881,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         await _ui.SendMessageAsync(
             session.ChatId,
             $"Введи дату і час у форматі: YYYY-MM-DD HH:mm (наприклад 2026-03-26 21:11)\nTimezone: {timeZoneId}",
+            replyToMessageId: session.ReplyToMessageId,
             ct: ct);
     }
 
@@ -920,6 +927,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             session.ChatId,
             text,
             parseMode: ParseMode.Html,
+            replyToMessageId: session.ReplyToMessageId,
             replyMarkup: new InlineKeyboardMarkup(
             [
                 [InlineKeyboardButton.WithCallbackData("✅ Підтвердити upload", $"{PublishWizardPrefix}confirm")],
@@ -959,6 +967,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 session.ChatId,
                 BuildProgressText(session, 0),
                 parseMode: ParseMode.Html,
+                replyToMessageId: session.ReplyToMessageId,
                 ct: ct);
             session.ProgressMessageId = messageId;
         }
@@ -1215,7 +1224,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         }
         else
         {
-            await _ui.SendMessageAsync(session.ChatId, text, parseMode: ParseMode.Html, ct: ct);
+            await _ui.SendMessageAsync(session.ChatId, text, parseMode: ParseMode.Html, replyToMessageId: session.ReplyToMessageId, ct: ct);
         }
     }
 
@@ -1251,7 +1260,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         }
         else
         {
-            await _ui.SendMessageAsync(session.ChatId, text, parseMode: ParseMode.Html, ct: ct);
+            await _ui.SendMessageAsync(session.ChatId, text, parseMode: ParseMode.Html, replyToMessageId: session.ReplyToMessageId, ct: ct);
         }
     }
 
@@ -1272,7 +1281,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         }
         else
         {
-            await _ui.SendMessageAsync(session.ChatId, text, parseMode: ParseMode.Html, ct: ct);
+            await _ui.SendMessageAsync(session.ChatId, text, parseMode: ParseMode.Html, replyToMessageId: session.ReplyToMessageId, ct: ct);
         }
     }
 
@@ -1291,18 +1300,20 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         }
         else
         {
-            await _ui.SendMessageAsync(session.ChatId, text, parseMode: ParseMode.Html, ct: ct);
+            await _ui.SendMessageAsync(session.ChatId, text, parseMode: ParseMode.Html, replyToMessageId: session.ReplyToMessageId, ct: ct);
         }
     }
 
     private async Task CancelPublishWizardAsync(long chatId, string message, CancellationToken ct)
     {
+        int? replyToMessageId = null;
         if (_publishSessionsByChatId.TryRemove(chatId, out var session))
         {
             session.UploadCancellation?.Cancel();
+            replyToMessageId = session.ReplyToMessageId;
         }
 
-        await _ui.SendMessageAsync(chatId, message, ct: ct);
+        await _ui.SendMessageAsync(chatId, message, replyToMessageId: replyToMessageId, ct: ct);
     }
     private async Task RunProcessingJobAsync(long chatId, int msgId, VideoProcessingState state, CancellationToken ct)
     {

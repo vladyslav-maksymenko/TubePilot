@@ -31,6 +31,8 @@ internal sealed class PublishWizardSession(IReadOnlyList<PublishedResultContext>
 
     public YouTubeVideoVisibility Visibility { get; set; } = YouTubeVideoVisibility.Public;
 
+    public int? ReplyToMessageId { get; set; }
+
     public int? PromptMessageId { get; set; }
 
     public int? SummaryMessageId { get; set; }
