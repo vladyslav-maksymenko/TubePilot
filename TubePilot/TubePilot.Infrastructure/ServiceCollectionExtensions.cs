@@ -13,6 +13,7 @@ using TubePilot.Infrastructure.Telegram.Options;
 using TubePilot.Infrastructure.Video;
 using TubePilot.Infrastructure.YouTube;
 using TubePilot.Infrastructure.YouTube.Options;
+using Telegram.Bot;
 
 namespace TubePilot.Infrastructure;
 
@@ -30,6 +31,20 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(sp => new TelegramProcessingQueue(
             Math.Max(1, sp.GetRequiredService<IOptionsMonitor<TelegramOptions>>().CurrentValue.MaxConcurrentJobs),
             sp.GetRequiredService<ILogger<TelegramProcessingQueue>>()));
+        services.AddSingleton<ITelegramBotClient>(sp =>
+        {
+            var token = sp.GetRequiredService<IOptionsMonitor<TelegramOptions>>().CurrentValue.BotToken;
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                throw new ArgumentException("Telegram Bot Token is required to start the service.");
+            }
+
+            return new TelegramBotClient(token);
+        });
+        services.AddSingleton<IDelay, SystemDelay>();
+        services.AddSingleton<ITelegramResultCardClient, TelegramResultCardClient>();
+        services.AddSingleton<ITelegramResultThumbnailGenerator, TelegramResultThumbnailGenerator>();
+        services.AddSingleton<TelegramResultCardPublisher>();
         services.AddSingleton<IFfmpegRunner, FfmpegRunner>();
         services.AddSingleton<IVideoProcessor, FfmpegVideoProcessor>();
         services.AddSingleton<IGoogleSheetsLogger, GoogleSheetsLogger>();

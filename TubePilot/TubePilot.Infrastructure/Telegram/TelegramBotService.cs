@@ -20,7 +20,7 @@ namespace TubePilot.Infrastructure.Telegram;
 internal sealed class TelegramBotService : BackgroundService, ITelegramBotService
 {
     private const string SubscriberFile = "telegram_subscriber.txt";
-    private const string PublishResultPrefix = "res:";
+    internal const string PublishResultPrefix = "res:";
     private const string PublishWizardPrefix = "pw:";
 
     private readonly ITelegramBotClient _botClient;
@@ -28,6 +28,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     private readonly IYouTubeUploader _youTubeUploader;
     private readonly IGoogleSheetsLogger _googleSheetsLogger;
     private readonly TelegramProcessingQueue _processingQueue;
+    private readonly TelegramResultCardPublisher _resultCardPublisher;
     private readonly ILogger<TelegramBotService> _logger;
     private readonly IOptionsMonitor<TelegramOptions> _telegramOptions;
     private readonly IOptionsMonitor<PublishingOptions> _publishingOptions;
@@ -58,29 +59,24 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         IOptionsMonitor<TelegramOptions> options,
         IOptionsMonitor<PublishingOptions> publishingOptions,
         IOptionsMonitor<YouTubeOptions> youTubeOptions,
+        ITelegramBotClient botClient,
         IVideoProcessor videoProcessor,
         IYouTubeUploader youTubeUploader,
         IGoogleSheetsLogger googleSheetsLogger,
         TelegramProcessingQueue processingQueue,
+        TelegramResultCardPublisher resultCardPublisher,
         ILogger<TelegramBotService> logger)
     {
         _videoProcessor = videoProcessor;
         _youTubeUploader = youTubeUploader;
         _googleSheetsLogger = googleSheetsLogger;
         _processingQueue = processingQueue;
+        _resultCardPublisher = resultCardPublisher;
         _logger = logger;
         _telegramOptions = options;
         _publishingOptions = publishingOptions;
         _youTubeOptions = youTubeOptions;
-
-        var token = options.CurrentValue.BotToken;
-        if (string.IsNullOrWhiteSpace(token))
-        {
-            _logger.LogCritical("Telegram Bot Token is missing in secrets.json!");
-            throw new ArgumentException("Telegram Bot Token is required to start the service.");
-        }
-
-        _botClient = new TelegramBotClient(token);
+        _botClient = botClient;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -843,8 +839,10 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
             await _botClient.EditMessageText(chatId, msgId, finalTxt, parseMode: ParseMode.Html, cancellationToken: ct);
 
-            foreach (var res in results)
+            var contexts = new List<PublishedResultContext>(results.Count);
+            for (var index = 0; index < results.Count; index++)
             {
+                var res = results[index];
                 var absoluteLocalPath = Path.GetFullPath(res.OutputPath);
                 var fileName = Path.GetFileName(absoluteLocalPath) ?? absoluteLocalPath;
                 var resultUrl = BuildPublicResultUrl(fileName);
@@ -860,14 +858,13 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                     res.SizeBytes,
                     res.Summary);
 
-                var message = await _botClient.SendMessage(
-                    chatId,
-                    BuildResultMessage(context),
-                    parseMode: ParseMode.Html,
-                    replyMarkup: BuildResultKeyboard(context),
-                    cancellationToken: ct);
+                contexts.Add(context);
+            }
 
-                _publishedResultsByMessageId[message.MessageId] = context;
+            var messages = await _resultCardPublisher.SendResultCardsAsync(chatId, contexts, ct);
+            for (var index = 0; index < messages.Count; index++)
+            {
+                _publishedResultsByMessageId[messages[index].MessageId] = contexts[index];
             }
         }
         catch (Exception ex)
@@ -886,27 +883,6 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     {
         var baseUrl = _telegramOptions.CurrentValue.BaseUrl?.TrimEnd('/') ?? string.Empty;
         return TelegramResultLinks.BuildPublicResultUrl(baseUrl, fileName);
-    }
-
-    private static string BuildResultMessage(PublishedResultContext context)
-        => TelegramSegmentResultMessageBuilder.BuildResultMessage(context);
-
-    private static InlineKeyboardMarkup BuildResultKeyboard(PublishedResultContext context)
-    {
-        var buttons = new List<IEnumerable<InlineKeyboardButton>>();
-
-        if (!string.IsNullOrWhiteSpace(context.PublicUrl) && IsTelegramSafeButtonUrl(context.PublicUrl))
-        {
-            buttons.Add([InlineKeyboardButton.WithUrl("🔗 Відкрити результат", context.PublicUrl)]);
-        }
-
-        buttons.Add(
-        [
-            InlineKeyboardButton.WithCallbackData("📤 Опублікувати на YouTube", $"{PublishResultPrefix}publish"),
-            InlineKeyboardButton.WithCallbackData("❌ Скасувати", $"{PublishResultPrefix}cancel")
-        ]);
-
-        return new InlineKeyboardMarkup(buttons);
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)
@@ -934,28 +910,5 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
     private static string H(string text) => WebUtility.HtmlEncode(text);
 
-    private static bool IsTelegramSafeButtonUrl(string url)
-    {
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
-        {
-            return false;
-        }
 
-        if (uri.Scheme is not ("http" or "https"))
-        {
-            return false;
-        }
-
-        if (uri.IsLoopback)
-        {
-            return false;
-        }
-
-        if (IPAddress.TryParse(uri.Host, out var ip) && IPAddress.IsLoopback(ip))
-        {
-            return false;
-        }
-
-        return true;
-    }
 }

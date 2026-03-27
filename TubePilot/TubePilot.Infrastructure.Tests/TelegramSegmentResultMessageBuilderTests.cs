@@ -47,7 +47,7 @@ public sealed class TelegramSegmentResultMessageBuilderTests
     }
 
     [Fact]
-    public void BuildResultMessage_HtmlEncodesFileNameAndPath()
+    public void BuildResultMessage_HtmlEncodesFileName()
     {
         var summary = new VideoProcessingSummary(
             Slice: null,
@@ -73,7 +73,7 @@ public sealed class TelegramSegmentResultMessageBuilderTests
         var message = TelegramSegmentResultMessageBuilder.BuildResultMessage(context);
 
         Assert.Contains("my&lt;vid&gt;.mp4", message, StringComparison.Ordinal);
-        Assert.Contains(@"C:\out\my&lt;vid&gt;.mp4", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("my<vid>.mp4", message, StringComparison.Ordinal);
     }
 }
 

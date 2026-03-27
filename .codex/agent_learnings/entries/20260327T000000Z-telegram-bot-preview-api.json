@@ -1,0 +1,10 @@
+{
+  "ts_utc": "2026-03-27T00:00:00Z",
+  "category": "technical-gotcha",
+  "text": "Telegram.Bot 22.x in this repo does not accept a `disableWebPagePreview` named argument on `SendMessage`.\nWhen updating Telegram calls, compile against the installed package signature instead of older examples.\nThis avoids chasing phantom API diffs from blog posts or older snippets.",
+  "issue": 14,
+  "pointers": [
+    "TubePilot/TubePilot.Infrastructure/Telegram/TelegramBotService.cs",
+    "TubePilot/TubePilot.Infrastructure/TubePilot.Infrastructure.csproj"
+  ]
+}

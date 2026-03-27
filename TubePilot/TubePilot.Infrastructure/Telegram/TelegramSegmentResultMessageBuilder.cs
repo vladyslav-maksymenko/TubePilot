@@ -11,25 +11,21 @@ internal static class TelegramSegmentResultMessageBuilder
     {
         var lines = new List<string>
         {
-            "🎬 <b>ГОТОВИЙ РЕЗУЛЬТАТ</b>",
+            "📹 <b>Результат готовий</b>",
             $"<code>{H(context.ResultFileName)}</code>",
             string.Empty,
-            $"🧩 <b>Part</b>: <code>{context.PartNumber}/{context.TotalParts}</code>",
             $"⏱ <b>Тривалість</b>: <code>{FormatDuration(context.DurationSeconds)}</code>",
             $"📦 <b>Розмір</b>: <code>{FormatSize(context.SizeBytes)}</code>",
             string.Empty,
             "🛠 <b>Застосовано</b>:"
         };
 
-        lines.AddRange(BuildAppliedOptionLines(context.ProcessingSummary));
-
-        lines.Add(string.Empty);
-        lines.Add($"📁 Локально: <code>{H(context.ResultFilePath)}</code>");
-
-        if (!string.IsNullOrWhiteSpace(context.PublicUrl))
+        if (context.TotalParts > 1)
         {
-            lines.Add($"🌐 <a href=\"{H(context.PublicUrl)}\">Відкрити плеєр</a>");
+            lines.Insert(3, $"🧩 <b>Part</b>: <code>{context.PartNumber}/{context.TotalParts}</code>");
         }
+
+        lines.AddRange(BuildAppliedOptionLines(context.ProcessingSummary));
 
         return string.Join('\n', lines);
     }
