@@ -633,19 +633,13 @@ internal sealed class FfmpegVideoProcessor(
         if (!string.IsNullOrWhiteSpace(inputDirectory))
         {
             candidates.Add(Path.Combine(inputDirectory, "qr.png"));
-            candidates.Add(Path.Combine(inputDirectory, "patreon sling.png"));
+            candidates.Add(Path.Combine(inputDirectory, "assets", "qr.png"));
         }
 
         candidates.Add(Path.Combine(Directory.GetCurrentDirectory(), "qr.png"));
+        candidates.Add(Path.Combine(Directory.GetCurrentDirectory(), "assets", "qr.png"));
         candidates.Add(Path.Combine(AppContext.BaseDirectory, "qr.png"));
-        candidates.Add(Path.Combine(AppContext.BaseDirectory, "patreon sling.png"));
-
-        var currentDirectory = new DirectoryInfo(AppContext.BaseDirectory);
-        while (currentDirectory is not null)
-        {
-            candidates.Add(Path.Combine(currentDirectory.FullName, "video-bot-project", "patreon sling.png"));
-            currentDirectory = currentDirectory.Parent;
-        }
+        candidates.Add(Path.Combine(AppContext.BaseDirectory, "assets", "qr.png"));
 
         foreach (var candidate in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
         {
@@ -656,7 +650,7 @@ internal sealed class FfmpegVideoProcessor(
         }
 
         throw new FileNotFoundException(
-            "QR overlay image not found. Expected a qr.png or patreon sling.png asset in the repo or application directory.");
+            "QR overlay image not found. Expected `qr.png` (or `assets/qr.png`) near the input video, in the current directory, or in the application directory.");
     }
 
     private static void TryDeleteQuietly(string path)
