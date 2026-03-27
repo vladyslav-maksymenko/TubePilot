@@ -880,28 +880,11 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     private string BuildPublicResultUrl(string fileName)
     {
         var baseUrl = _telegramOptions.CurrentValue.BaseUrl?.TrimEnd('/') ?? string.Empty;
-        return string.IsNullOrWhiteSpace(baseUrl)
-            ? string.Empty
-            : $"{baseUrl}/play/{Uri.EscapeDataString(fileName)}";
+        return TelegramResultLinks.BuildPublicResultUrl(baseUrl, fileName);
     }
 
     private static string BuildResultMessage(PublishedResultContext context)
-    {
-        var lines = new List<string>
-        {
-            "🎬 <b>ГОТОВИЙ ФАЙЛ:</b>",
-            $"<code>{H(context.ResultFileName)}</code>",
-            string.Empty,
-            $"📁 Локально: <code>{H(context.ResultFilePath)}</code>"
-        };
-
-        if (!string.IsNullOrWhiteSpace(context.PublicUrl))
-        {
-            lines.Add($"🔗 URL: <code>{H(context.PublicUrl)}</code>");
-        }
-
-        return string.Join('\n', lines);
-    }
+        => TelegramResultLinks.BuildResultMessage(context.ResultFileName, context.ResultFilePath, context.PublicUrl);
 
     private static InlineKeyboardMarkup BuildResultKeyboard(PublishedResultContext context)
     {
