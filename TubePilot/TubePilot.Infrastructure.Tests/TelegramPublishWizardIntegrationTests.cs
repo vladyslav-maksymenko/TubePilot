@@ -312,6 +312,7 @@ public sealed class TelegramPublishWizardIntegrationTests
         });
 
         var processingQueue = new TelegramProcessingQueue(1, NullLogger<TelegramProcessingQueue>.Instance);
+        var publishQueue = new TelegramPublishQueue(1, NullLogger<TelegramPublishQueue>.Instance);
 
         var resultCardPublisher = new TelegramResultCardPublisher(
             new FakeResultCardClient(),
@@ -330,6 +331,7 @@ public sealed class TelegramPublishWizardIntegrationTests
             sheetsLogger,
             new FakeYouTubeChannelLookup(),
             processingQueue,
+            publishQueue,
             resultCardPublisher,
             new FakeThumbnailGenerator(),
             timeProvider,

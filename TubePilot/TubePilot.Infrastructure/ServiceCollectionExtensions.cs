@@ -31,6 +31,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(sp => new TelegramProcessingQueue(
             Math.Max(1, sp.GetRequiredService<IOptionsMonitor<TelegramOptions>>().CurrentValue.MaxConcurrentJobs),
             sp.GetRequiredService<ILogger<TelegramProcessingQueue>>()));
+        services.AddSingleton(sp => new TelegramPublishQueue(
+            Math.Max(1, sp.GetRequiredService<IOptionsMonitor<PublishingOptions>>().CurrentValue.MaxConcurrentUploads),
+            sp.GetRequiredService<ILogger<TelegramPublishQueue>>()));
         services.AddSingleton<ITelegramBotClient>(sp =>
         {
             var token = sp.GetRequiredService<IOptionsMonitor<TelegramOptions>>().CurrentValue.BotToken;

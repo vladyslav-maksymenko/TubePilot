@@ -32,6 +32,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     private readonly IGoogleSheetsLogger _googleSheetsLogger;
     private readonly IYouTubeChannelLookup _youTubeChannelLookup;
     private readonly TelegramProcessingQueue _processingQueue;
+    private readonly TelegramPublishQueue _publishQueue;
     private readonly TelegramResultCardPublisher _resultCardPublisher;
     private readonly ITelegramResultThumbnailGenerator _thumbnailGenerator;
     private readonly TimeProvider _timeProvider;
@@ -44,7 +45,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     private readonly ConcurrentDictionary<(long ChatId, int MessageId), VideoProcessingState> _userSelections = [];
     private readonly ConcurrentDictionary<(long ChatId, int MessageId), Task> _activeProcessingJobs = [];
     private readonly ConcurrentDictionary<long, PublishWizardSession> _publishSessionsByChatId = [];
-    private readonly ConcurrentDictionary<long, Task> _activePublishJobsByChatId = [];
+    private readonly ConcurrentDictionary<(long ChatId, int MessageId), Task> _activePublishJobs = [];
     private readonly ConcurrentDictionary<(long ChatId, int MessageId), PublishedResultContext> _publishedResultsByMessageId = [];
     private readonly ConcurrentDictionary<(long ChatId, int GroupId), IReadOnlyList<PublishedResultContext>> _publishedResultGroupsById = [];
     private readonly ConcurrentDictionary<(long ChatId, string ChannelName), DateTimeOffset> _lastScheduledAtUtcByChatAndChannel = [];
@@ -75,6 +76,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         IGoogleSheetsLogger googleSheetsLogger,
         IYouTubeChannelLookup youTubeChannelLookup,
         TelegramProcessingQueue processingQueue,
+        TelegramPublishQueue publishQueue,
         TelegramResultCardPublisher resultCardPublisher,
         ITelegramResultThumbnailGenerator thumbnailGenerator,
         TimeProvider timeProvider,
@@ -85,6 +87,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         _googleSheetsLogger = googleSheetsLogger;
         _youTubeChannelLookup = youTubeChannelLookup;
         _processingQueue = processingQueue;
+        _publishQueue = publishQueue;
         _resultCardPublisher = resultCardPublisher;
         _thumbnailGenerator = thumbnailGenerator;
         _timeProvider = timeProvider;
@@ -490,9 +493,14 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     }
 
     internal Task DebugWaitForActivePublishJobAsync(long chatId)
-        => _activePublishJobsByChatId.TryGetValue(chatId, out var job)
-            ? job
-            : Task.CompletedTask;
+    {
+        var jobs = _activePublishJobs
+            .Where(kvp => kvp.Key.ChatId == chatId)
+            .Select(kvp => kvp.Value)
+            .ToArray();
+
+        return jobs.Length == 0 ? Task.CompletedTask : Task.WhenAll(jobs);
+    }
 
     private async Task HandleWizardCallbackAsync(CallbackQuery query, long chatId, string action, CancellationToken ct)
     {
@@ -642,8 +650,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                     return;
                 }
 
-                await _ui.AnswerCallbackQueryAsync(query.Id, "Починаю upload...", ct: ct);
-                await StartUploadAsync(session, _serviceStoppingToken);
+                await EnqueueUploadAsync(query, session, _serviceStoppingToken);
                 return;
 
             default:
@@ -938,7 +945,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         session.SummaryMessageId = summaryId;
     }
 
-    private async Task StartUploadAsync(PublishWizardSession session, CancellationToken ct)
+    private async Task EnqueueUploadAsync(CallbackQuery query, PublishWizardSession session, CancellationToken ct)
     {
         if (!_publishSessionsByChatId.TryGetValue(session.ChatId, out var currentSession) || !ReferenceEquals(currentSession, session))
         {
@@ -954,37 +961,114 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         if (session.SummaryMessageId is not null)
         {
             session.ProgressMessageId = session.SummaryMessageId;
-            await _ui.EditMessageTextAsync(
-                session.ChatId,
-                session.SummaryMessageId.Value,
-                BuildProgressText(session, 0),
-                parseMode: ParseMode.Html,
-                ct: ct);
         }
         else
         {
             var messageId = await _ui.SendMessageAsync(
                 session.ChatId,
-                BuildProgressText(session, 0),
+                "⏳ Готую upload...",
                 parseMode: ParseMode.Html,
                 replyToMessageId: session.ReplyToMessageId,
                 ct: ct);
             session.ProgressMessageId = messageId;
         }
-        
-        // The uploader itself reports initial progress (0%) right away.
-        // Mark it as reported to avoid duplicate edits that Telegram rejects with "message is not modified".
-        session.LastProgressPercent = 0;
 
-        var job = RunUploadJobAsync(session, linkedCts.Token);
-        _activePublishJobsByChatId[session.ChatId] = job;
-        _ = job.ContinueWith(t =>
+        if (session.ProgressMessageId is null)
         {
             linkedCts.Dispose();
             session.UploadCancellation?.Dispose();
             session.UploadCancellation = null;
-            _activePublishJobsByChatId.TryRemove(session.ChatId, out _);
+            return;
+        }
+
+        // Remove the confirm keyboard to avoid accidental double-clicks.
+        try
+        {
+            await _botClient.EditMessageReplyMarkup(session.ChatId, session.ProgressMessageId.Value, replyMarkup: null, cancellationToken: ct);
+        }
+        catch (ApiRequestException ex) when (ex.ErrorCode is 400 or 429)
+        {
+            _logger.LogDebug(ex, "Failed to remove Telegram markup for publish message (chatId={ChatId}, msgId={MsgId}).", session.ChatId, session.ProgressMessageId);
+        }
+
+        // Release the wizard immediately: user can start another publish while this upload is queued/running.
+        _publishSessionsByChatId.TryRemove(session.ChatId, out _);
+
+        var admission = await _publishQueue.EnqueueAsync(
+            session.ChatId,
+            session.ProgressMessageId.Value,
+            onQueuedAsync: async (position, callbackCt) => await EditPublishQueuedMessageAsync(session, position, callbackCt),
+            onStartAsync: async callbackCt => await EditPublishStartMessageAsync(session, callbackCt),
+            processAsync: callbackCt => RunUploadJobAsync(session, callbackCt),
+            linkedCts.Token);
+
+        if (admission.Status == TelegramPublishQueue.QueueAdmissionStatus.Duplicate)
+        {
+            await _ui.AnswerCallbackQueryAsync(query.Id, "⏳ Уже в черзі чи в публікації.", ct: ct);
+            linkedCts.Dispose();
+            session.UploadCancellation?.Dispose();
+            session.UploadCancellation = null;
+            return;
+        }
+
+        var jobKey = (session.ChatId, session.ProgressMessageId.Value);
+        _activePublishJobs[jobKey] = admission.LifecycleTask;
+        _ = admission.LifecycleTask.ContinueWith(_ =>
+        {
+            linkedCts.Dispose();
+            session.UploadCancellation?.Dispose();
+            session.UploadCancellation = null;
+            _activePublishJobs.TryRemove(jobKey, out _);
         }, TaskScheduler.Default);
+
+        var ackText = admission.Status == TelegramPublishQueue.QueueAdmissionStatus.Queued
+            ? $"В черзі: #{admission.Position}"
+            : "Upload стартував";
+
+        await _ui.AnswerCallbackQueryAsync(query.Id, ackText, ct: ct);
+    }
+
+    private Task EditPublishQueuedMessageAsync(PublishWizardSession session, int queuePosition, CancellationToken ct)
+        => session.ProgressMessageId is null
+            ? Task.CompletedTask
+            : _ui.EditMessageTextAsync(
+                session.ChatId,
+                session.ProgressMessageId.Value,
+                BuildPublishQueuedText(session, queuePosition),
+                parseMode: ParseMode.Html,
+                ct: ct);
+
+    private Task EditPublishStartMessageAsync(PublishWizardSession session, CancellationToken ct)
+    {
+        if (session.ProgressMessageId is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        // The uploader itself reports initial progress (0%) right away.
+        // Mark it as reported to avoid duplicate edits that Telegram rejects with "message is not modified".
+        session.LastProgressPercent = 0;
+        return _ui.EditMessageTextAsync(
+            session.ChatId,
+            session.ProgressMessageId.Value,
+            BuildProgressText(session, 0),
+            parseMode: ParseMode.Html,
+            ct: ct);
+    }
+
+    private static string BuildPublishQueuedText(PublishWizardSession session, int position)
+    {
+        var context = session.ResultContext;
+
+        var titleLine = session.IsBulkPublish
+            ? $"📝 <code>{H(session.TitleTemplate)}</code>"
+            : $"📝 <code>{H(session.Title)}</code>";
+
+        return
+            $"⏳ <b>Upload queued</b> (#{position})\n\n" +
+            $"<blockquote>📁 <code>{H(context.SourceFileName)}</code>\n" +
+            $"{titleLine}</blockquote>\n\n" +
+            "Очікуй старту…";
     }
 
     private async Task RunUploadJobAsync(PublishWizardSession session, CancellationToken ct)
@@ -1404,10 +1488,10 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             await Task.WhenAll(_activeProcessingJobs.Values);
         }
 
-        if (!_activePublishJobsByChatId.IsEmpty)
+        if (!_activePublishJobs.IsEmpty)
         {
-            _logger.LogInformation("Waiting for {Count} active publish job(s) to complete...", _activePublishJobsByChatId.Count);
-            await Task.WhenAll(_activePublishJobsByChatId.Values);
+            _logger.LogInformation("Waiting for {Count} active publish job(s) to complete...", _activePublishJobs.Count);
+            await Task.WhenAll(_activePublishJobs.Values);
         }
 
         await base.StopAsync(cancellationToken);

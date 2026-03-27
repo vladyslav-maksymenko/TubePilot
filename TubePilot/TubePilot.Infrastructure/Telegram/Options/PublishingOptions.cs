@@ -16,4 +16,9 @@ public sealed record PublishingOptions
     /// Channel names shown in the Telegram publish wizard.
     /// </summary>
     public IReadOnlyList<string> YouTubeChannels { get; init; } = [];
+
+    /// <summary>
+    /// Max number of concurrent YouTube upload jobs per chat.
+    /// </summary>
+    public int MaxConcurrentUploads { get; init; } = 1;
 }
