@@ -1,5 +1,6 @@
 ﻿using System.Collections.Concurrent;
 using System.Net;
+using System.Globalization;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -29,6 +30,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     private readonly IGoogleSheetsLogger _googleSheetsLogger;
     private readonly TelegramProcessingQueue _processingQueue;
     private readonly TelegramResultCardPublisher _resultCardPublisher;
+    private readonly ITelegramResultThumbnailGenerator _thumbnailGenerator;
     private readonly ILogger<TelegramBotService> _logger;
     private readonly IOptionsMonitor<TelegramOptions> _telegramOptions;
     private readonly IOptionsMonitor<PublishingOptions> _publishingOptions;
@@ -39,7 +41,10 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     private readonly ConcurrentDictionary<(long ChatId, int MessageId), Task> _activeProcessingJobs = [];
     private readonly ConcurrentDictionary<long, PublishWizardSession> _publishSessionsByChatId = [];
     private readonly ConcurrentDictionary<long, Task> _activePublishJobsByChatId = [];
-    private readonly ConcurrentDictionary<int, PublishedResultContext> _publishedResultsByMessageId = [];
+    private readonly ConcurrentDictionary<(long ChatId, int MessageId), PublishedResultContext> _publishedResultsByMessageId = [];
+    private readonly ConcurrentDictionary<(long ChatId, int GroupId), IReadOnlyList<PublishedResultContext>> _publishedResultGroupsById = [];
+    private readonly ConcurrentDictionary<long, DateTimeOffset> _lastScheduledAtUtcByChatId = [];
+    private int _publishedResultGroupCounter;
 
     private static readonly Dictionary<string, string> OptionLabels = new()
     {
@@ -65,6 +70,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         IGoogleSheetsLogger googleSheetsLogger,
         TelegramProcessingQueue processingQueue,
         TelegramResultCardPublisher resultCardPublisher,
+        ITelegramResultThumbnailGenerator thumbnailGenerator,
         ILogger<TelegramBotService> logger)
     {
         _videoProcessor = videoProcessor;
@@ -72,6 +78,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         _googleSheetsLogger = googleSheetsLogger;
         _processingQueue = processingQueue;
         _resultCardPublisher = resultCardPublisher;
+        _thumbnailGenerator = thumbnailGenerator;
         _logger = logger;
         _telegramOptions = options;
         _publishingOptions = publishingOptions;
@@ -307,7 +314,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 }
 
                 _activeProcessingJobs[selectionKey] = admission.LifecycleTask;
-                _ = admission.LifecycleTask.ContinueWith(_ => _activeProcessingJobs.TryRemove(selectionKey, out _), TaskScheduler.Default);
+                _ = admission.LifecycleTask.ContinueWith(t => _activeProcessingJobs.TryRemove(selectionKey, out _), TaskScheduler.Default);
 
                 var queueText = admission.Status == TelegramProcessingQueue.QueueAdmissionStatus.Queued
                     ? $"В черзі: #{admission.Position}"
@@ -350,7 +357,10 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         string action,
         CancellationToken ct)
     {
-        switch (action)
+        var parts = action.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var command = parts.Length > 0 ? parts[0] : string.Empty;
+
+        switch (command)
         {
             case "publish":
                 if (_publishSessionsByChatId.ContainsKey(chatId))
@@ -363,7 +373,20 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                     return;
                 }
 
-                if (!_publishedResultsByMessageId.TryGetValue(msgId, out var resultContext))
+                PublishedResultContext? resultContext = null;
+                if (parts.Length >= 3 &&
+                    int.TryParse(parts[1], out var groupId) &&
+                    int.TryParse(parts[2], out var groupIndex))
+                {
+                    resultContext = TryGetGroupResultContext(chatId, groupId, groupIndex);
+                }
+
+                if (resultContext is null)
+                {
+                    _publishedResultsByMessageId.TryGetValue((chatId, msgId), out resultContext);
+                }
+
+                if (resultContext is null)
                 {
                     await _botClient.AnswerCallbackQuery(
                         query.Id,
@@ -373,10 +396,47 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                     return;
                 }
 
-                var session = new PublishWizardSession(resultContext, chatId);
+                var session = new PublishWizardSession([resultContext], chatId);
                 _publishSessionsByChatId[chatId] = session;
                 await _botClient.AnswerCallbackQuery(query.Id, cancellationToken: ct);
-                await SendTitlePromptAsync(session, ct);
+                await SendChannelPromptAsync(session, ct);
+                return;
+
+            case "publish-all":
+                if (_publishSessionsByChatId.ContainsKey(chatId))
+                {
+                    await _botClient.AnswerCallbackQuery(
+                        query.Id,
+                        "Спочатку заверши або скасуй поточний wizard.",
+                        showAlert: true,
+                        cancellationToken: ct);
+                    return;
+                }
+
+                if (parts.Length < 2 || !int.TryParse(parts[1], out var bulkGroupId))
+                {
+                    await _botClient.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                    return;
+                }
+
+                if (!_publishedResultGroupsById.TryGetValue((chatId, bulkGroupId), out var groupContexts) || groupContexts.Count <= 1)
+                {
+                    await _botClient.AnswerCallbackQuery(
+                        query.Id,
+                        "Не вдалося знайти сегменти для публікації.",
+                        showAlert: true,
+                        cancellationToken: ct);
+                    return;
+                }
+
+                var orderedContexts = groupContexts
+                    .OrderBy(c => c.PartNumber)
+                    .ToArray();
+
+                var bulkSession = new PublishWizardSession(orderedContexts, chatId);
+                _publishSessionsByChatId[chatId] = bulkSession;
+                await _botClient.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                await SendChannelPromptAsync(bulkSession, ct);
                 return;
 
             case "cancel":
@@ -397,11 +457,50 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         }
     }
 
+    private PublishedResultContext? TryGetGroupResultContext(long chatId, int groupId, int index)
+    {
+        if (!_publishedResultGroupsById.TryGetValue((chatId, groupId), out var contexts))
+        {
+            return null;
+        }
+
+        if (index < 0 || index >= contexts.Count)
+        {
+            return null;
+        }
+
+        return contexts[index];
+    }
+
     private async Task HandleWizardCallbackAsync(CallbackQuery query, long chatId, string action, CancellationToken ct)
     {
         if (!_publishSessionsByChatId.TryGetValue(chatId, out var session))
         {
             await _botClient.AnswerCallbackQuery(query.Id, "Wizard вже завершено.", showAlert: true, cancellationToken: ct);
+            return;
+        }
+
+        if (action.StartsWith("channel:", StringComparison.Ordinal))
+        {
+            if (session.Step != PublishWizardStep.WaitingForChannel)
+            {
+                await _botClient.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                return;
+            }
+
+            var indexText = action["channel:".Length..];
+            var channels = _publishingOptions.CurrentValue.YouTubeChannels;
+            if (!int.TryParse(indexText, out var channelIndex) ||
+                channelIndex < 0 ||
+                channelIndex >= channels.Count)
+            {
+                await _botClient.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                return;
+            }
+
+            session.ChannelName = channels[channelIndex];
+            await _botClient.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+            await SendTitlePromptAsync(session, ct);
             return;
         }
 
@@ -414,7 +513,16 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                     return;
                 }
 
-                session.Title = PublishingScheduleHelper.GetDefaultTitle(session.ResultContext.ResultFileName);
+                if (session.IsBulkPublish)
+                {
+                    var baseTitle = PublishingScheduleHelper.GetDefaultTitle(session.ResultContext.ResultFileName);
+                    session.TitleTemplate = $"{baseTitle} Part {{N}}";
+                }
+                else
+                {
+                    session.Title = PublishingScheduleHelper.GetDefaultTitle(session.ResultContext.ResultFileName);
+                }
+
                 await _botClient.AnswerCallbackQuery(query.Id, "Використано ім'я файлу.", cancellationToken: ct);
                 await SendDescriptionPromptAsync(session, ct);
                 return;
@@ -433,6 +541,25 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
                 session.ScheduledPublishAtUtc = null;
                 await _botClient.AnswerCallbackQuery(query.Id, "Публікація буде одразу.", cancellationToken: ct);
+                await SendConfirmPromptAsync(session, ct);
+                return;
+
+            case "schedule-next":
+                if (session.Step != PublishWizardStep.WaitingForScheduleChoice)
+                {
+                    await _botClient.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                    return;
+                }
+
+                _lastScheduledAtUtcByChatId.TryGetValue(chatId, out var lastUtc);
+                var nextSlotUtc = PublishingScheduleHelper.GetNextFreeSlotUtc(
+                    DateTimeOffset.UtcNow,
+                    lastUtc == default ? null : lastUtc,
+                    _publishingOptions.CurrentValue.TimeZoneId,
+                    _publishingOptions.CurrentValue.DailyPublishTime);
+
+                session.ScheduledPublishAtUtc = nextSlotUtc;
+                await _botClient.AnswerCallbackQuery(query.Id, "Вибрано наступний слот.", cancellationToken: ct);
                 await SendConfirmPromptAsync(session, ct);
                 return;
 
@@ -474,6 +601,10 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
         switch (session.Step)
         {
+            case PublishWizardStep.WaitingForChannel:
+                await _botClient.SendMessage(session.ChatId, "Обери канал кнопкою нижче або /cancel.", cancellationToken: ct);
+                return;
+
             case PublishWizardStep.WaitingForTitle:
                 if (string.IsNullOrWhiteSpace(text))
                 {
@@ -481,7 +612,22 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                     return;
                 }
 
-                session.Title = text.Trim();
+                if (session.IsBulkPublish)
+                {
+                    var template = text.Trim();
+                    if (!template.Contains("{N}", StringComparison.Ordinal))
+                    {
+                        await _botClient.SendMessage(session.ChatId, "Шаблон має містити {N} (номер частини). Спробуй ще раз:", cancellationToken: ct);
+                        return;
+                    }
+
+                    session.TitleTemplate = template;
+                }
+                else
+                {
+                    session.Title = text.Trim();
+                }
+
                 await SendDescriptionPromptAsync(session, ct);
                 return;
 
@@ -525,12 +671,47 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 return;
         }
     }
+
+    private async Task SendChannelPromptAsync(PublishWizardSession session, CancellationToken ct)
+    {
+        session.Step = PublishWizardStep.WaitingForChannel;
+
+        var channels = _publishingOptions.CurrentValue.YouTubeChannels;
+        if (channels.Count == 0)
+        {
+            channels = ["Default"];
+        }
+
+        var rows = new List<InlineKeyboardButton[]>(channels.Count + 1);
+        for (var index = 0; index < channels.Count; index++)
+        {
+            rows.Add([InlineKeyboardButton.WithCallbackData($"📺 {channels[index]}", $"{PublishWizardPrefix}channel:{index}")]);
+        }
+
+        rows.Add([InlineKeyboardButton.WithCallbackData("❌ Cancel", $"{PublishWizardPrefix}cancel")]);
+
+        await _botClient.SendMessage(
+            session.ChatId,
+            "📺 Обери канал для публікації:",
+            replyMarkup: new InlineKeyboardMarkup(rows),
+            cancellationToken: ct);
+    }
+
     private async Task SendTitlePromptAsync(PublishWizardSession session, CancellationToken ct)
     {
         session.Step = PublishWizardStep.WaitingForTitle;
-        var text =
-            "📝 <b>Введи заголовок (Title):</b>\n\n" +
-            $"Файл: <code>{H(session.ResultContext.ResultFileName)}</code>";
+
+        var text = session.IsBulkPublish
+            ? "📝 <b>Введи title template для всіх сегментів:</b>\n\n" +
+              "Використай <code>{N}</code> як номер частини (Part 1, Part 2, ...)\n" +
+              $"Файл: <code>{H(session.ResultContext.SourceFileName)}</code>\n" +
+              $"Сегментів: <b>{session.ResultContexts.Count}</b>"
+            : "📝 <b>Введи заголовок (Title):</b>\n\n" +
+              $"Файл: <code>{H(session.ResultContext.ResultFileName)}</code>";
+
+        var useFileNameText = session.IsBulkPublish
+            ? "✅ Використати ім'я файлу + {N}"
+            : "✅ Використати ім'я файлу";
 
         var message = await _botClient.SendMessage(
             session.ChatId,
@@ -538,7 +719,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             parseMode: ParseMode.Html,
             replyMarkup: new InlineKeyboardMarkup(
             [
-                [InlineKeyboardButton.WithCallbackData("✅ Використати ім'я файлу", $"{PublishWizardPrefix}use-file-name")],
+                [InlineKeyboardButton.WithCallbackData(useFileNameText, $"{PublishWizardPrefix}use-file-name")],
                 [InlineKeyboardButton.WithCallbackData("❌ Cancel", $"{PublishWizardPrefix}cancel")]
             ]),
             cancellationToken: ct);
@@ -574,6 +755,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             replyMarkup: new InlineKeyboardMarkup(
             [
                 [InlineKeyboardButton.WithCallbackData("🚀 Зараз", $"{PublishWizardPrefix}schedule-now")],
+                [InlineKeyboardButton.WithCallbackData("⏭️ Next free slot", $"{PublishWizardPrefix}schedule-next")],
                 [InlineKeyboardButton.WithCallbackData("🕒 Вибрати дату і час", $"{PublishWizardPrefix}schedule-pick")],
                 [InlineKeyboardButton.WithCallbackData("❌ Cancel", $"{PublishWizardPrefix}cancel")]
             ]),
@@ -594,15 +776,25 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     {
         session.Step = PublishWizardStep.Confirm;
 
+        var channelName = string.IsNullOrWhiteSpace(session.ChannelName) ? "Default" : session.ChannelName;
         var description = string.IsNullOrWhiteSpace(session.Description) ? "/skip" : session.Description;
         var tags = session.Tags.Count == 0 ? "/skip" : string.Join(", ", session.Tags);
         var publishTime = PublishingScheduleHelper.FormatPublishTime(session.ScheduledPublishAtUtc, _publishingOptions.CurrentValue.TimeZoneId);
 
+        var titleLine = session.IsBulkPublish
+            ? $"📝 Title template: <code>{H(session.TitleTemplate)}</code>\n"
+            : $"📝 Title: <code>{H(session.Title)}</code>\n";
+
+        var fileLine = session.IsBulkPublish
+            ? $"📁 Source: <code>{H(session.ResultContext.SourceFileName)}</code>\n📦 Segments: <code>{session.ResultContexts.Count}</code>\n"
+            : $"📁 Файл: <code>{H(session.ResultContext.ResultFileName)}</code>\n";
+
         var text =
             "📋 <b>Підтвердження upload</b>\n\n" +
             $"<blockquote>\n" +
-            $"📁 Файл: <code>{H(session.ResultContext.ResultFileName)}</code>\n" +
-            $"📝 Title: <code>{H(session.Title)}</code>\n" +
+            $"📺 Channel: <code>{H(channelName)}</code>\n" +
+            fileLine +
+            titleLine +
             $"🧾 Description: <code>{H(description)}</code>\n" +
             $"🏷️ Tags: <code>{H(tags)}</code>\n" +
             $"🗓️ Publish: <code>{H(publishTime)}</code>\n" +
@@ -657,7 +849,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
         var job = RunUploadJobAsync(session, linkedCts.Token);
         _activePublishJobsByChatId[session.ChatId] = job;
-        _ = job.ContinueWith(_ =>
+        _ = job.ContinueWith(t =>
         {
             linkedCts.Dispose();
             session.UploadCancellation?.Dispose();
@@ -670,12 +862,48 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     {
         try
         {
+            if (session.IsBulkPublish)
+            {
+                await RunBulkUploadJobAsync(session, ct);
+            }
+            else
+            {
+                await RunSingleUploadJobAsync(session, ct);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            await SendUploadCancelledAsync(session, ct);
+        }
+        catch (Exception ex)
+        {
+            var context = session.IsBulkPublish
+                ? session.ResultContexts[Math.Clamp(session.CurrentBulkIndex, 0, session.ResultContexts.Count - 1)]
+                : session.ResultContext;
+
+            _logger.LogError(ex, "YouTube upload failed for {FileName}.", context.ResultFileName);
+            await SendUploadFailureAsync(session, ex, ct);
+        }
+        finally
+        {
+            _publishSessionsByChatId.TryRemove(session.ChatId, out _);
+        }
+    }
+
+    private async Task RunSingleUploadJobAsync(PublishWizardSession session, CancellationToken ct)
+    {
+        string? thumbPath = null;
+        try
+        {
+            thumbPath = await _thumbnailGenerator.TryGenerateAsync(session.ResultContext.ResultFilePath, ct);
+
             var request = new YouTubeUploadRequest(
                 session.ResultContext.ResultFilePath,
                 session.Title,
                 session.Description,
                 session.Tags,
                 session.ScheduledPublishAtUtc,
+                ThumbnailFilePath: thumbPath,
                 CategoryId: _youTubeOptions.CurrentValue.DefaultCategoryId);
 
             var result = await _youTubeUploader.UploadAsync(
@@ -692,20 +920,120 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 result.ScheduledAtUtc,
                 ct);
 
+            RecordLastScheduledAt(session.ChatId, result);
             await SendUploadSuccessAsync(session, result, ct);
-        }
-        catch (OperationCanceledException)
-        {
-            await SendUploadCancelledAsync(session, ct);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "YouTube upload failed for {FileName}.", session.ResultContext.ResultFileName);
-            await SendUploadFailureAsync(session, ex, ct);
         }
         finally
         {
-            _publishSessionsByChatId.TryRemove(session.ChatId, out _);
+            TryDeleteQuietly(thumbPath);
+        }
+    }
+
+    private async Task RunBulkUploadJobAsync(PublishWizardSession session, CancellationToken ct)
+    {
+        var tzId = _publishingOptions.CurrentValue.TimeZoneId;
+        var dailyPublishTime = _publishingOptions.CurrentValue.DailyPublishTime;
+        var baseScheduledAtUtc = session.ScheduledPublishAtUtc;
+
+        var results = new List<(PublishedResultContext Context, string Title, YouTubeUploadResult Result)>(session.ResultContexts.Count);
+
+        for (var index = 0; index < session.ResultContexts.Count; index++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            session.CurrentBulkIndex = index;
+            session.LastProgressPercent = -1;
+
+            var context = session.ResultContexts[index];
+            var title = session.TitleTemplate.Replace("{N}", context.PartNumber.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal);
+
+            DateTimeOffset? scheduledAtUtc;
+            if (baseScheduledAtUtc is null)
+            {
+                if (index == 0)
+                {
+                    scheduledAtUtc = null;
+                }
+                else
+                {
+                    _lastScheduledAtUtcByChatId.TryGetValue(session.ChatId, out var lastUtc);
+                    scheduledAtUtc = PublishingScheduleHelper.GetNextFreeSlotUtc(
+                        DateTimeOffset.UtcNow,
+                        lastUtc == default ? null : lastUtc,
+                        tzId,
+                        dailyPublishTime);
+                }
+            }
+            else
+            {
+                scheduledAtUtc = PublishingScheduleHelper.AddLocalDays(baseScheduledAtUtc.Value, index, tzId);
+            }
+
+            session.Title = title;
+            session.ScheduledPublishAtUtc = scheduledAtUtc;
+
+            string? thumbPath = null;
+            try
+            {
+                thumbPath = await _thumbnailGenerator.TryGenerateAsync(context.ResultFilePath, ct);
+
+                var request = new YouTubeUploadRequest(
+                    context.ResultFilePath,
+                    title,
+                    session.Description,
+                    session.Tags,
+                    scheduledAtUtc,
+                    ThumbnailFilePath: thumbPath,
+                    CategoryId: _youTubeOptions.CurrentValue.DefaultCategoryId);
+
+                var result = await _youTubeUploader.UploadAsync(
+                    request,
+                    percent => UpdateUploadProgressAsync(session, percent, ct),
+                    ct);
+
+                await _googleSheetsLogger.LogUploadAsync(
+                    context.SourceFileName,
+                    title,
+                    result.VideoId,
+                    result.YouTubeUrl,
+                    result.Status.ToString().ToLowerInvariant(),
+                    result.ScheduledAtUtc,
+                    ct);
+
+                RecordLastScheduledAt(session.ChatId, result);
+                results.Add((context, title, result));
+            }
+            finally
+            {
+                TryDeleteQuietly(thumbPath);
+            }
+        }
+
+        await SendBulkUploadSuccessAsync(session, results, ct);
+    }
+
+    private void RecordLastScheduledAt(long chatId, YouTubeUploadResult result)
+    {
+        _lastScheduledAtUtcByChatId[chatId] = result.ScheduledAtUtc ?? DateTimeOffset.UtcNow;
+    }
+
+    private static void TryDeleteQuietly(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
+            // Best effort cleanup.
         }
     }
 
@@ -728,9 +1056,18 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     private static string BuildProgressText(PublishWizardSession session, int percent)
     {
         var label = session.ScheduledPublishAtUtc is null ? "Published" : "Scheduled";
+        var context = session.IsBulkPublish
+            ? session.ResultContexts[Math.Clamp(session.CurrentBulkIndex, 0, session.ResultContexts.Count - 1)]
+            : session.ResultContext;
+
+        var bulkLine = session.IsBulkPublish
+            ? $"📦 Part {context.PartNumber}/{session.ResultContexts.Count}\n\n"
+            : string.Empty;
+
         return
             $"📤 <b>{label} upload to YouTube...</b>\n\n" +
-            $"<blockquote>📁 <code>{H(session.ResultContext.ResultFileName)}</code>\n" +
+            bulkLine +
+            $"<blockquote>📁 <code>{H(context.ResultFileName)}</code>\n" +
             $"📝 <code>{H(session.Title)}</code></blockquote>\n\n" +
             $"📊 <code>[{new string('#', percent / 10)}{new string('-', 10 - (percent / 10))}] {percent}%</code>";
     }
@@ -742,6 +1079,42 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             $"<blockquote>📁 <code>{H(session.ResultContext.ResultFileName)}</code>\n" +
             $"📝 <code>{H(session.Title)}</code>\n" +
             $"🔗 <a href=\"{H(result.YouTubeUrl)}\">Open on YouTube</a></blockquote>";
+
+        if (session.ProgressMessageId is not null)
+        {
+            await _botClient.EditMessageText(
+                session.ChatId,
+                session.ProgressMessageId.Value,
+                text,
+                parseMode: ParseMode.Html,
+                cancellationToken: ct);
+        }
+        else
+        {
+            await _botClient.SendMessage(session.ChatId, text, parseMode: ParseMode.Html, cancellationToken: ct);
+        }
+    }
+
+    private async Task SendBulkUploadSuccessAsync(
+        PublishWizardSession session,
+        IReadOnlyList<(PublishedResultContext Context, string Title, YouTubeUploadResult Result)> results,
+        CancellationToken ct)
+    {
+        var channelName = string.IsNullOrWhiteSpace(session.ChannelName) ? "Default" : session.ChannelName;
+        var visible = results.Take(10).ToArray();
+
+        var lines = visible.Select(r =>
+            $"• Part {r.Context.PartNumber}: <a href=\"{H(r.Result.YouTubeUrl)}\">{H(r.Title)}</a> ({H(r.Result.Status.ToString())})");
+
+        var suffix = results.Count > visible.Length ? $"\n… +{results.Count - visible.Length} more" : string.Empty;
+
+        var text =
+            "✅ <b>Bulk upload completed</b>\n\n" +
+            $"<blockquote>📺 <code>{H(channelName)}</code>\n" +
+            $"📁 <code>{H(session.ResultContext.SourceFileName)}</code>\n" +
+            $"📦 Segments: <b>{results.Count}</b></blockquote>\n\n" +
+            string.Join('\n', lines) +
+            suffix;
 
         if (session.ProgressMessageId is not null)
         {
@@ -861,10 +1234,13 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 contexts.Add(context);
             }
 
-            var messages = await _resultCardPublisher.SendResultCardsAsync(chatId, contexts, ct);
+            var resultGroupId = Interlocked.Increment(ref _publishedResultGroupCounter);
+            _publishedResultGroupsById[(chatId, resultGroupId)] = contexts;
+
+            var messages = await _resultCardPublisher.SendResultCardsAsync(chatId, resultGroupId, contexts, ct);
             for (var index = 0; index < messages.Count; index++)
             {
-                _publishedResultsByMessageId[messages[index].MessageId] = contexts[index];
+                _publishedResultsByMessageId[(chatId, messages[index].MessageId)] = contexts[index];
             }
         }
         catch (Exception ex)
