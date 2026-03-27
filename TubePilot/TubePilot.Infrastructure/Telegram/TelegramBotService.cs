@@ -845,7 +845,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
             foreach (var res in results)
             {
-                var absoluteLocalPath = Path.GetFullPath(res);
+                var absoluteLocalPath = Path.GetFullPath(res.OutputPath);
                 var fileName = Path.GetFileName(absoluteLocalPath) ?? absoluteLocalPath;
                 var resultUrl = BuildPublicResultUrl(fileName);
 
@@ -853,7 +853,12 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                     state.FileName,
                     fileName,
                     absoluteLocalPath,
-                    resultUrl);
+                    resultUrl,
+                    res.PartNumber,
+                    res.TotalParts,
+                    res.DurationSeconds,
+                    res.SizeBytes,
+                    res.Summary);
 
                 var message = await _botClient.SendMessage(
                     chatId,
@@ -884,7 +889,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     }
 
     private static string BuildResultMessage(PublishedResultContext context)
-        => TelegramResultLinks.BuildResultMessage(context.ResultFileName, context.ResultFilePath, context.PublicUrl);
+        => TelegramSegmentResultMessageBuilder.BuildResultMessage(context);
 
     private static InlineKeyboardMarkup BuildResultKeyboard(PublishedResultContext context)
     {
