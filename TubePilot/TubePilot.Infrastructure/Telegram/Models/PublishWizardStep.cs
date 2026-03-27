@@ -9,6 +9,7 @@ internal enum PublishWizardStep
     WaitingForTags,
     WaitingForScheduleChoice,
     WaitingForCustomDate,
+    WaitingForVisibility,
     Confirm,
     Uploading
 }

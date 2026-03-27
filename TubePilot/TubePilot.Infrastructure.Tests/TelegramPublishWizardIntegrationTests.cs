@@ -41,6 +41,7 @@ public sealed class TelegramPublishWizardIntegrationTests
         await service.HandleUpdateAsync(botClient, CreateMessageUpdate(chatId, "My Description"), CancellationToken.None);
         await service.HandleUpdateAsync(botClient, CreateMessageUpdate(chatId, "tag1, tag2"), CancellationToken.None);
         await service.HandleUpdateAsync(botClient, CreateCallbackUpdate(chatId, msgId: 500, data: "pw:schedule-now"), CancellationToken.None);
+        await service.HandleUpdateAsync(botClient, CreateCallbackUpdate(chatId, msgId: 500, data: "pw:visibility:skip"), CancellationToken.None);
         await service.HandleUpdateAsync(botClient, CreateCallbackUpdate(chatId, msgId: 500, data: "pw:confirm"), CancellationToken.None);
         await service.DebugWaitForActivePublishJobAsync(chatId);
 
@@ -53,10 +54,40 @@ public sealed class TelegramPublishWizardIntegrationTests
         Assert.Equal("My Title", uploader.Requests[0].Title);
         Assert.Equal("My Description", uploader.Requests[0].Description);
         Assert.Equal(["tag1", "tag2"], uploader.Requests[0].Tags);
+        Assert.Equal(YouTubeVideoVisibility.Public, uploader.Requests[0].Visibility);
         Assert.Null(uploader.Requests[0].ScheduledPublishAtUtc);
 
         Assert.Contains(ui.EditMessageTextCalls, c => c.Text.Contains("https://youtube.test/watch?v=vid_1", StringComparison.Ordinal));
         Assert.Single(sheets.Calls);
+    }
+
+    [Fact]
+    public async Task Wizard_SinglePublish_ScheduleNow_VisibilityUnlisted_SetsRequestVisibility()
+    {
+        var chatId = 10L;
+        var nowUtc = DateTimeOffset.Parse("2026-01-15T07:00:00+00:00");
+
+        var botClient = TelegramBotClientStub.Create(out _);
+        var ui = new FakeUiClient();
+        var uploader = new FakeYouTubeUploader(req => new YouTubeUploadResult("vid_1", "https://youtube.test/watch?v=vid_1", YouTubeUploadStatus.Published, null));
+        var sheets = new FakeSheetsLogger();
+        var service = CreateService(chatId, botClient, ui, uploader, sheets, new FrozenTimeProvider(nowUtc), dailyPublishTime: "10:00");
+
+        var groupId = 123;
+        service.DebugRegisterPublishedResultGroup(chatId, groupId, [CreateResult(partNumber: 1, totalParts: 1)]);
+
+        await service.HandleUpdateAsync(botClient, CreateCallbackUpdate(chatId, msgId: 500, data: $"res:publish:{groupId}:0"), CancellationToken.None);
+        await service.HandleUpdateAsync(botClient, CreateCallbackUpdate(chatId, msgId: 500, data: "pw:channel:0"), CancellationToken.None);
+        await service.HandleUpdateAsync(botClient, CreateMessageUpdate(chatId, "My Title"), CancellationToken.None);
+        await service.HandleUpdateAsync(botClient, CreateMessageUpdate(chatId, "/skip"), CancellationToken.None);
+        await service.HandleUpdateAsync(botClient, CreateMessageUpdate(chatId, "/skip"), CancellationToken.None);
+        await service.HandleUpdateAsync(botClient, CreateCallbackUpdate(chatId, msgId: 500, data: "pw:schedule-now"), CancellationToken.None);
+        await service.HandleUpdateAsync(botClient, CreateCallbackUpdate(chatId, msgId: 500, data: "pw:visibility:unlisted"), CancellationToken.None);
+        await service.HandleUpdateAsync(botClient, CreateCallbackUpdate(chatId, msgId: 500, data: "pw:confirm"), CancellationToken.None);
+        await service.DebugWaitForActivePublishJobAsync(chatId);
+
+        Assert.Single(uploader.Requests);
+        Assert.Equal(YouTubeVideoVisibility.Unlisted, uploader.Requests[0].Visibility);
     }
 
     [Fact]

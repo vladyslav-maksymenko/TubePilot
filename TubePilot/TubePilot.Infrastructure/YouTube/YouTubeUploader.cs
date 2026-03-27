@@ -213,7 +213,7 @@ internal sealed class YouTubeUploader(
     private static object BuildInitiatePayload(YouTubeUploadRequest request, YouTubeOptions options)
     {
         var scheduledUtc = request.ScheduledPublishAtUtc?.UtcDateTime;
-        var privacyStatus = scheduledUtc is null ? "public" : "private";
+        var privacyStatus = scheduledUtc is null ? MapVisibility(request.Visibility) : "private";
         var categoryId = string.IsNullOrWhiteSpace(request.CategoryId) ? options.DefaultCategoryId : request.CategoryId;
 
         return new
@@ -233,6 +233,15 @@ internal sealed class YouTubeUploader(
             }
         };
     }
+
+    private static string MapVisibility(YouTubeVideoVisibility visibility)
+        => visibility switch
+        {
+            YouTubeVideoVisibility.Public => "public",
+            YouTubeVideoVisibility.Unlisted => "unlisted",
+            YouTubeVideoVisibility.Private => "private",
+            _ => "public"
+        };
 
     private static async Task<int> ReportProgressAsync(
         long bytesUploaded,

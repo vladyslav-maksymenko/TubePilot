@@ -1,3 +1,5 @@
+using TubePilot.Core.Contracts;
+
 namespace TubePilot.Infrastructure.Telegram.Models;
 
 internal sealed class PublishWizardSession(IReadOnlyList<PublishedResultContext> resultContexts, long chatId)
@@ -26,6 +28,8 @@ internal sealed class PublishWizardSession(IReadOnlyList<PublishedResultContext>
     public IReadOnlyList<string> Tags { get; set; } = [];
 
     public DateTimeOffset? ScheduledPublishAtUtc { get; set; }
+
+    public YouTubeVideoVisibility Visibility { get; set; } = YouTubeVideoVisibility.Public;
 
     public int? PromptMessageId { get; set; }
 

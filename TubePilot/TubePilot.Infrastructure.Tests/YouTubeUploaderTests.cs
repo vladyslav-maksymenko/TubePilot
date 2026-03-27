@@ -127,6 +127,73 @@ public sealed class YouTubeUploaderRequestBuildingTests
         var publishAtText = doc.RootElement.GetProperty("status").GetProperty("publishAt").GetString();
         Assert.Equal("2026-04-01T10:00:00Z", publishAtText);
     }
+
+    [Fact]
+    public async Task UploadAsync_WhenUnlisted_SetsUnlistedPrivacy()
+    {
+        string? initiateJson = null;
+
+        var handler = new RecordingHandler(async request =>
+        {
+            if (request.Method == HttpMethod.Post &&
+                request.RequestUri!.ToString().Contains("/upload/youtube/v3/videos", StringComparison.Ordinal))
+            {
+                initiateJson = await request.Content!.ReadAsStringAsync();
+
+                var response = new HttpResponseMessage(HttpStatusCode.OK);
+                response.Headers.Location = new Uri("https://upload.test/session");
+                return response;
+            }
+
+            if (request.Method == HttpMethod.Put && request.RequestUri!.ToString() == "https://upload.test/session")
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""{"id":"video123"}""")
+                };
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.NotFound)
+            {
+                Content = new StringContent("""{"error":"unexpected request"}""")
+            };
+        });
+
+        var httpClient = new HttpClient(handler);
+        var tokenProvider = new StubAccessTokenProvider("access-token");
+        var optionsMonitor = new StaticOptionsMonitor<YouTubeOptions>(new YouTubeOptions { DefaultCategoryId = "22" });
+
+        var uploader = new YouTubeUploader(
+            httpClient,
+            tokenProvider,
+            optionsMonitor,
+            NullLogger<YouTubeUploader>.Instance);
+
+        var videoPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.mp4");
+        await File.WriteAllBytesAsync(videoPath, new byte[16]);
+
+        try
+        {
+            await uploader.UploadAsync(
+                new YouTubeUploadRequest(
+                    videoPath,
+                    "t",
+                    "d",
+                    Visibility: YouTubeVideoVisibility.Unlisted),
+                _ => Task.CompletedTask,
+                CancellationToken.None);
+        }
+        finally
+        {
+            File.Delete(videoPath);
+        }
+
+        Assert.NotNull(initiateJson);
+
+        using var doc = JsonDocument.Parse(initiateJson!);
+        Assert.Equal("unlisted", doc.RootElement.GetProperty("status").GetProperty("privacyStatus").GetString());
+        Assert.False(doc.RootElement.GetProperty("status").TryGetProperty("publishAt", out _));
+    }
 }
 
 file sealed class StubAccessTokenProvider(string token) : IYouTubeAccessTokenProvider

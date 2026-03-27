@@ -528,6 +528,37 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             return;
         }
 
+        if (action.StartsWith("visibility:", StringComparison.Ordinal))
+        {
+            if (session.Step != PublishWizardStep.WaitingForVisibility)
+            {
+                await _ui.AnswerCallbackQueryAsync(query.Id, ct: ct);
+                return;
+            }
+
+            var value = action["visibility:".Length..];
+            session.Visibility = value switch
+            {
+                "public" => YouTubeVideoVisibility.Public,
+                "unlisted" => YouTubeVideoVisibility.Unlisted,
+                "private" => YouTubeVideoVisibility.Private,
+                "skip" => YouTubeVideoVisibility.Public,
+                _ => YouTubeVideoVisibility.Public
+            };
+
+            var label = session.Visibility switch
+            {
+                YouTubeVideoVisibility.Public => "Public",
+                YouTubeVideoVisibility.Unlisted => "Unlisted",
+                YouTubeVideoVisibility.Private => "Private",
+                _ => "Public"
+            };
+
+            await _ui.AnswerCallbackQueryAsync(query.Id, $"Visibility: {label}", ct: ct);
+            await SendConfirmPromptAsync(session, ct);
+            return;
+        }
+
         switch (action)
         {
             case "use-file-name":
@@ -564,8 +595,9 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 }
 
                 session.ScheduledPublishAtUtc = null;
+                session.Visibility = YouTubeVideoVisibility.Public;
                 await _ui.AnswerCallbackQueryAsync(query.Id, "Публікація буде одразу.", ct: ct);
-                await SendConfirmPromptAsync(session, ct);
+                await SendVisibilityPromptAsync(session, ct);
                 return;
 
             case "schedule-next":
@@ -585,6 +617,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                     _publishingOptions.CurrentValue.DailyPublishTime);
 
                 session.ScheduledPublishAtUtc = nextSlotUtc;
+                session.Visibility = YouTubeVideoVisibility.Public;
                 await _ui.AnswerCallbackQueryAsync(query.Id, "Вибрано наступний слот.", ct: ct);
                 await SendConfirmPromptAsync(session, ct);
                 return;
@@ -682,7 +715,12 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 }
 
                 session.ScheduledPublishAtUtc = scheduledPublishAtUtc;
+                session.Visibility = YouTubeVideoVisibility.Public;
                 await SendConfirmPromptAsync(session, ct);
+                return;
+
+            case PublishWizardStep.WaitingForVisibility:
+                await _ui.SendMessageAsync(session.ChatId, "Обери visibility кнопкою нижче або /cancel.", ct: ct);
                 return;
 
             case PublishWizardStep.Confirm:
@@ -810,6 +848,26 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             ct: ct);
     }
 
+    private async Task SendVisibilityPromptAsync(PublishWizardSession session, CancellationToken ct)
+    {
+        session.Step = PublishWizardStep.WaitingForVisibility;
+
+        await _ui.SendMessageAsync(
+            session.ChatId,
+            "🌐 Обери visibility відео на YouTube:",
+            replyMarkup: new InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton.WithCallbackData("🌍 Public (default)", $"{PublishWizardPrefix}visibility:public"),
+                    InlineKeyboardButton.WithCallbackData("🔗 Unlisted", $"{PublishWizardPrefix}visibility:unlisted")
+                ],
+                [InlineKeyboardButton.WithCallbackData("🔒 Private", $"{PublishWizardPrefix}visibility:private")],
+                [InlineKeyboardButton.WithCallbackData("⏩ Skip (Public)", $"{PublishWizardPrefix}visibility:skip")],
+                [InlineKeyboardButton.WithCallbackData("❌ Cancel", $"{PublishWizardPrefix}cancel")]
+            ]),
+            ct: ct);
+    }
+
     private async Task SendCustomDatePromptAsync(PublishWizardSession session, CancellationToken ct)
     {
         session.Step = PublishWizardStep.WaitingForCustomDate;
@@ -828,6 +886,15 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         var description = string.IsNullOrWhiteSpace(session.Description) ? "/skip" : session.Description;
         var tags = session.Tags.Count == 0 ? "/skip" : string.Join(", ", session.Tags);
         var publishTime = PublishingScheduleHelper.FormatPublishTime(session.ScheduledPublishAtUtc, _publishingOptions.CurrentValue.TimeZoneId);
+        var visibility = session.ScheduledPublishAtUtc is null
+            ? session.Visibility switch
+            {
+                YouTubeVideoVisibility.Public => "public",
+                YouTubeVideoVisibility.Unlisted => "unlisted",
+                YouTubeVideoVisibility.Private => "private",
+                _ => "public"
+            }
+            : "public (scheduled)";
 
         var titleLine = session.IsBulkPublish
             ? $"📝 Title template: <code>{H(session.TitleTemplate)}</code>\n"
@@ -845,6 +912,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             titleLine +
             $"🧾 Description: <code>{H(description)}</code>\n" +
             $"🏷️ Tags: <code>{H(tags)}</code>\n" +
+            $"🌐 Visibility: <code>{H(visibility)}</code>\n" +
             $"🗓️ Publish: <code>{H(publishTime)}</code>\n" +
             $"</blockquote>";
 
@@ -954,7 +1022,8 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 session.Title,
                 session.Description,
                 session.Tags,
-                session.ScheduledPublishAtUtc,
+                Visibility: session.Visibility,
+                ScheduledPublishAtUtc: session.ScheduledPublishAtUtc,
                 ThumbnailFilePath: thumbPath,
                 CategoryId: _youTubeOptions.CurrentValue.DefaultCategoryId);
 
@@ -1035,7 +1104,8 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                     title,
                     session.Description,
                     session.Tags,
-                    scheduledAtUtc,
+                    Visibility: session.Visibility,
+                    ScheduledPublishAtUtc: scheduledAtUtc,
                     ThumbnailFilePath: thumbPath,
                     CategoryId: _youTubeOptions.CurrentValue.DefaultCategoryId);
 

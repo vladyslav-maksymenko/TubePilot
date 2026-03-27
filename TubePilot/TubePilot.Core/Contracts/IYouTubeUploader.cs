@@ -13,9 +13,17 @@ public sealed record YouTubeUploadRequest(
     string Title,
     string Description,
     IReadOnlyList<string>? Tags = null,
+    YouTubeVideoVisibility Visibility = YouTubeVideoVisibility.Public,
     DateTimeOffset? ScheduledPublishAtUtc = null,
     string? ThumbnailFilePath = null,
     string? CategoryId = null);
+
+public enum YouTubeVideoVisibility
+{
+    Public,
+    Unlisted,
+    Private
+}
 
 public enum YouTubeUploadStatus
 {

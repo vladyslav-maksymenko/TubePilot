@@ -4,7 +4,8 @@ This module implements `TubePilot.Core.Contracts.IYouTubeUploader` using:
 - OAuth2 refresh token (`YouTube:ClientId`, `YouTube:ClientSecret`, `YouTube:RefreshToken`)
 - resumable uploads (chunked `PUT` with `Content-Range`)
 - optional thumbnail upload
-- scheduled publishing (`publishAt` + `privacyStatus=private`)
+- visibility selection (`public`/`unlisted`/`private`) for immediate uploads
+- scheduled publishing (`publishAt` + `privacyStatus=private` → becomes public at publish time)
 
 ## Config
 
@@ -33,6 +34,7 @@ var result = await youTubeUploader.UploadAsync(
         Title: "TubePilot test",
         Description: "Uploaded by TubePilot",
         Tags: ["test", "tubepilot"],
+        Visibility: YouTubeVideoVisibility.Unlisted,
         ScheduledPublishAtUtc: DateTimeOffset.UtcNow.AddHours(2),
         ThumbnailFilePath: @"C:\videos\thumb.jpg"),
     progress =>
