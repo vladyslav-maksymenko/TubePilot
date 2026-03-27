@@ -26,7 +26,7 @@ public sealed class FfmpegVideoProcessorTests
         });
 
         Assert.Single(outputs);
-        Assert.True(File.Exists(outputs[0]));
+        Assert.True(File.Exists(outputs[0].OutputPath));
         Assert.Single(runner.RunCalls);
         Assert.Contains("-filter_complex", runner.RunCalls[0].Arguments);
         Assert.Contains("hflip", string.Join(' ', runner.RunCalls[0].Arguments));
@@ -59,7 +59,7 @@ public sealed class FfmpegVideoProcessorTests
         });
 
         Assert.Single(outputs);
-        Assert.True(File.Exists(outputs[0]));
+        Assert.True(File.Exists(outputs[0].OutputPath));
         Assert.Equal(2, runner.RunCalls.Count);
         Assert.Contains("-avoid_negative_ts", runner.RunCalls[0].Arguments);
         Assert.Contains("make_zero", runner.RunCalls[0].Arguments);

@@ -11,6 +11,8 @@ internal sealed class FfmpegVideoProcessor(
     IFfmpegRunner ffmpegRunner,
     ILogger<FfmpegVideoProcessor> logger) : IVideoProcessor
 {
+    private sealed record TransformPlan(VideoProcessingSummary Summary, string? QrOverlayPath);
+
     private static readonly string[] OrderedOptions =
     [
         "mirror",
@@ -25,7 +27,7 @@ internal sealed class FfmpegVideoProcessor(
         "downscale_1080p"
     ];
 
-    public async Task<IReadOnlyList<string>> ProcessAsync(
+    public async Task<IReadOnlyList<VideoProcessingResult>> ProcessAsync(
         string inputPath,
         HashSet<string> options,
         Func<VideoProcessingProgress, Task> progressCallback,
@@ -79,18 +81,19 @@ internal sealed class FfmpegVideoProcessor(
 
         if (!sliceRequested)
         {
-            var outputSuffix = BuildSuffix(appliedOptions, mediaInfo);
+            var plan = BuildTransformPlan(inputPath, mediaInfo, appliedOptions, slice: null);
+            var outputSuffix = BuildSuffix(plan.Summary);
             var outputPath = BuildFinalPath(processedDir, inputPath, outputSuffix);
             await RunStepAsync(
                 mediaInfo.DurationSeconds,
-                BuildTransformArguments(inputPath, outputPath, mediaInfo, appliedOptions),
+                BuildTransformArguments(inputPath, outputPath, mediaInfo, plan),
                 VideoProcessingStage.Transform,
                 ReportAsync,
                 completedSteps: 0,
                 totalSteps: 1,
                 ct);
             await ReportAsync(new VideoProcessingProgress(100, VideoProcessingStage.Finalizing));
-            return [outputPath];
+            return [await BuildResultAsync(outputPath, 1, 1, plan.Summary, mediaInfo.DurationSeconds, ct)];
         }
 
         var slices = BuildSlices(mediaInfo.DurationSeconds, useLongSlice);
@@ -103,7 +106,7 @@ internal sealed class FfmpegVideoProcessor(
 
         var totalSteps = slices.Count * (appliedOptions.Length == 0 ? 1 : 2);
         var completedSteps = 0;
-        var outputs = new List<string>(slices.Count);
+        var outputs = new List<VideoProcessingResult>(slices.Count);
         var temporaryFiles = new List<string>();
 
         try
@@ -113,7 +116,10 @@ internal sealed class FfmpegVideoProcessor(
                 ct.ThrowIfCancellationRequested();
 
                 var slice = slices[index];
+                var sliceInfo = new VideoProcessingSliceInfo(slice.StartSeconds, slice.DurationSeconds);
                 var sliceBaseName = BuildSliceBaseName(inputPath, index + 1);
+                var partNumber = index + 1;
+                var totalParts = slices.Count;
 
                 if (appliedOptions.Length == 0)
                 {
@@ -127,7 +133,18 @@ internal sealed class FfmpegVideoProcessor(
                         totalSteps,
                         ct);
                     completedSteps++;
-                    outputs.Add(finalSlicePath);
+
+                    var summary = new VideoProcessingSummary(
+                        sliceInfo,
+                        Mirror: false,
+                        Volume: null,
+                        Speed: null,
+                        ColorCorrection: null,
+                        QrOverlay: false,
+                        Rotate: null,
+                        Downscale: null);
+
+                    outputs.Add(await BuildResultAsync(finalSlicePath, partNumber, totalParts, summary, slice.DurationSeconds, ct));
                     continue;
                 }
 
@@ -144,19 +161,20 @@ internal sealed class FfmpegVideoProcessor(
                     ct);
                 completedSteps++;
 
-                var transformedSuffix = BuildSuffix(appliedOptions, mediaInfo);
+                var plan = BuildTransformPlan(inputPath, mediaInfo, appliedOptions, sliceInfo);
+                var transformedSuffix = BuildSuffix(plan.Summary);
                 var finalOutputPath = BuildFinalPath(processedDir, inputPath, $"{sliceBaseName}_{transformedSuffix}");
 
                 await RunStepAsync(
                     slice.DurationSeconds,
-                    BuildTransformArguments(tempCutPath, finalOutputPath, mediaInfo with { DurationSeconds = slice.DurationSeconds }, appliedOptions),
+                    BuildTransformArguments(tempCutPath, finalOutputPath, mediaInfo with { DurationSeconds = slice.DurationSeconds }, plan),
                     VideoProcessingStage.Transform,
                     ReportAsync,
                     completedSteps,
                     totalSteps,
                     ct);
                 completedSteps++;
-                outputs.Add(finalOutputPath);
+                outputs.Add(await BuildResultAsync(finalOutputPath, partNumber, totalParts, plan.Summary, slice.DurationSeconds, ct));
             }
 
             await ReportAsync(new VideoProcessingProgress(100, VideoProcessingStage.Finalizing));
@@ -169,6 +187,36 @@ internal sealed class FfmpegVideoProcessor(
                 TryDeleteQuietly(temporaryFile);
             }
         }
+    }
+
+    private async Task<VideoProcessingResult> BuildResultAsync(
+        string outputPath,
+        int partNumber,
+        int totalParts,
+        VideoProcessingSummary summary,
+        double fallbackDurationSeconds,
+        CancellationToken ct)
+    {
+        var sizeBytes = new FileInfo(outputPath).Length;
+        var durationSeconds = fallbackDurationSeconds;
+
+        try
+        {
+            var probed = await ffmpegRunner.ProbeAsync(outputPath, ct);
+            durationSeconds = probed.DurationSeconds;
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Failed to probe {OutputPath} for duration. Falling back to {Fallback}s.", outputPath, fallbackDurationSeconds);
+        }
+
+        return new VideoProcessingResult(
+            outputPath,
+            partNumber,
+            totalParts,
+            durationSeconds,
+            sizeBytes,
+            summary);
     }
 
     private async Task RunStepAsync(
@@ -237,45 +285,122 @@ internal sealed class FfmpegVideoProcessor(
         return Path.Combine(Path.GetTempPath(), $"TubePilot_{baseName}_part{partNumber:00}_{Guid.NewGuid():N}{extension}");
     }
 
-    private static string BuildSuffix(string[] appliedOptions, FfmpegProbeResult mediaInfo)
+    private static TransformPlan BuildTransformPlan(
+        string assetLookupPath,
+        FfmpegProbeResult mediaInfo,
+        string[] appliedOptions,
+        VideoProcessingSliceInfo? slice)
     {
-        var suffixParts = new List<string>();
-        string? speedSuffix = null;
+        var mirror = false;
+        VideoProcessingVolumeInfo? volume = null;
+        VideoProcessingSpeedInfo? speed = null;
+        VideoProcessingColorCorrectionInfo? colorCorrection = null;
+        var qrOverlay = false;
+        string? qrOverlayPath = null;
+        VideoProcessingRotateInfo? rotate = null;
+        VideoProcessingDownscaleInfo? downscale = null;
+
         foreach (var option in appliedOptions)
         {
             switch (option)
             {
                 case "mirror":
-                    suffixParts.Add("mir");
+                    mirror = true;
                     break;
                 case "reduce_audio":
                     var volumeReduction = Random.Shared.NextDouble() * 0.10 + 0.80;
-                    suffixParts.Add($"vol{(int)Math.Round(volumeReduction * 100)}");
+                    volume = new VideoProcessingVolumeInfo(volumeReduction);
                     break;
                 case "slow_down":
                     var slowdownFactor = Random.Shared.NextDouble() * 0.03 + 1.04;
-                    speedSuffix = $"slow{(int)Math.Round(slowdownFactor * 100)}";
+                    speed = new VideoProcessingSpeedInfo(1d / slowdownFactor);
                     break;
                 case "speed_up":
                     var speedupFactor = Random.Shared.NextDouble() * 0.02 + 1.03;
-                    speedSuffix = $"fast{(int)Math.Round(speedupFactor * 100)}";
+                    speed = new VideoProcessingSpeedInfo(speedupFactor);
                     break;
                 case "color_correct":
-                    suffixParts.Add("color");
+                    var saturation = 1.0 + Random.Shared.NextDouble() * 0.03 + 0.04;
+                    var brightness = -(Random.Shared.NextDouble() * 0.03 + 0.04);
+                    var gamma = 1.0 - (Random.Shared.NextDouble() * 0.02 + 0.01);
+                    colorCorrection = new VideoProcessingColorCorrectionInfo(saturation, brightness, gamma);
                     break;
                 case "qr_overlay":
-                    suffixParts.Add("qr");
+                    qrOverlay = true;
+                    qrOverlayPath = ResolveQrOverlayPath(assetLookupPath);
                     break;
                 case "rotate":
                     var degrees = Random.Shared.NextDouble() * 2d + 3d;
-                    suffixParts.Add($"rot{(int)Math.Round(degrees)}");
+                    var zoom = Random.Shared.NextDouble() * 0.05 + 1.10;
+                    rotate = new VideoProcessingRotateInfo(degrees, zoom);
                     break;
                 case "downscale_1080p":
                     if (mediaInfo.Height is > 1080)
                     {
-                        suffixParts.Add("1080p");
+                        downscale = new VideoProcessingDownscaleInfo(1080);
                     }
                     break;
+            }
+        }
+
+        var summary = new VideoProcessingSummary(
+            slice,
+            mirror,
+            volume,
+            speed,
+            colorCorrection,
+            qrOverlay,
+            rotate,
+            downscale);
+
+        return new TransformPlan(summary, qrOverlayPath);
+    }
+
+    private static string BuildSuffix(VideoProcessingSummary summary)
+    {
+        var suffixParts = new List<string>();
+        string? speedSuffix = null;
+
+        if (summary.Mirror)
+        {
+            suffixParts.Add("mir");
+        }
+
+        if (summary.Volume is not null)
+        {
+            suffixParts.Add(FormattableString.Invariant($"vol{(int)Math.Round(summary.Volume.Value.Factor * 100)}"));
+        }
+
+        if (summary.ColorCorrection is not null)
+        {
+            suffixParts.Add("color");
+        }
+
+        if (summary.QrOverlay)
+        {
+            suffixParts.Add("qr");
+        }
+
+        if (summary.Rotate is not null)
+        {
+            suffixParts.Add(FormattableString.Invariant($"rot{(int)Math.Round(summary.Rotate.Value.Degrees)}"));
+        }
+
+        if (summary.Downscale is not null)
+        {
+            suffixParts.Add("1080p");
+        }
+
+        if (summary.Speed is not null)
+        {
+            var speedFactor = summary.Speed.Value.SpeedFactor;
+            if (speedFactor > 1.0001)
+            {
+                speedSuffix = FormattableString.Invariant($"fast{(int)Math.Round(speedFactor * 100)}");
+            }
+            else if (speedFactor < 0.9999)
+            {
+                speedSuffix = FormattableString.Invariant($"slow{(int)Math.Round((1d / speedFactor) * 100)}");
             }
         }
 
@@ -306,71 +431,52 @@ internal sealed class FfmpegVideoProcessor(
         string inputPath,
         string outputPath,
         FfmpegProbeResult mediaInfo,
-        string[] appliedOptions)
+        TransformPlan plan)
     {
         var arguments = new List<string> { "-i", inputPath };
         var filterParts = new List<string>();
         var videoFilters = new List<string>();
         var audioFilters = new List<string>();
-        double? playbackFactor = null;
-        double? audioTempoFactor = null;
-        string? qrOverlayPath = null;
+        var summary = plan.Summary;
+        var qrOverlayPath = plan.QrOverlayPath;
 
-        foreach (var option in appliedOptions)
+        if (summary.Mirror)
         {
-            switch (option)
-            {
-                case "mirror":
-                    videoFilters.Add("hflip");
-                    break;
-                case "reduce_audio":
-                    var volumeReduction = Random.Shared.NextDouble() * 0.10 + 0.80;
-                    audioFilters.Add(FormattableString.Invariant($"volume={volumeReduction:0.00}"));
-                    break;
-                case "slow_down":
-                    var slowdownFactor = Random.Shared.NextDouble() * 0.03 + 1.04;
-                    playbackFactor = slowdownFactor;
-                    audioTempoFactor = 1d / slowdownFactor;
-                    break;
-                case "speed_up":
-                    var speedupFactor = Random.Shared.NextDouble() * 0.02 + 1.03;
-                    playbackFactor = 1d / speedupFactor;
-                    audioTempoFactor = speedupFactor;
-                    break;
-                case "color_correct":
-                    var saturation = 1.0 + Random.Shared.NextDouble() * 0.03 + 0.04;
-                    var brightness = -(Random.Shared.NextDouble() * 0.03 + 0.04);
-                    var gamma = 1.0 - (Random.Shared.NextDouble() * 0.02 + 0.01);
-                    videoFilters.Add(FormattableString.Invariant($"eq=saturation={saturation:0.000}:brightness={brightness:0.000}:gamma={gamma:0.000}"));
-                    break;
-                case "qr_overlay":
-                    qrOverlayPath = ResolveQrOverlayPath(inputPath);
-                    break;
-                case "rotate":
-                    var degrees = Random.Shared.NextDouble() * 2d + 3d;
-                    var zoom = Random.Shared.NextDouble() * 0.05 + 1.10;
-                    var radians = degrees * Math.PI / 180d;
-                    videoFilters.Add(FormattableString.Invariant($"scale=iw*{zoom:0.00}:ih*{zoom:0.00}"));
-                    videoFilters.Add(FormattableString.Invariant($"rotate={radians:0.0000}:fillcolor=black"));
-                    videoFilters.Add(FormattableString.Invariant($"crop=iw/{zoom:0.00}:ih/{zoom:0.00}"));
-                    break;
-                case "downscale_1080p":
-                    if (mediaInfo.Height is > 1080)
-                    {
-                        videoFilters.Add("scale=-2:1080");
-                    }
-                    break;
-            }
+            videoFilters.Add("hflip");
         }
 
-        if (playbackFactor is not null)
+        if (summary.Volume is not null)
         {
+            audioFilters.Add(FormattableString.Invariant($"volume={summary.Volume.Value.Factor:0.00}"));
+        }
+
+        if (summary.Speed is not null)
+        {
+            var speedFactor = summary.Speed.Value.SpeedFactor;
+            var playbackFactor = 1d / speedFactor;
             videoFilters.Insert(0, FormattableString.Invariant($"setpts={playbackFactor:0.0000}*PTS"));
+            audioFilters.Insert(0, FormattableString.Invariant($"atempo={speedFactor:0.0000}"));
         }
 
-        if (audioTempoFactor is not null)
+        if (summary.ColorCorrection is not null)
         {
-            audioFilters.Insert(0, FormattableString.Invariant($"atempo={audioTempoFactor:0.0000}"));
+            var color = summary.ColorCorrection.Value;
+            videoFilters.Add(FormattableString.Invariant(
+                $"eq=saturation={color.Saturation:0.000}:brightness={color.Brightness:0.000}:gamma={color.Gamma:0.000}"));
+        }
+
+        if (summary.Rotate is not null)
+        {
+            var rotation = summary.Rotate.Value;
+            var radians = rotation.Degrees * Math.PI / 180d;
+            videoFilters.Add(FormattableString.Invariant($"scale=iw*{rotation.Zoom:0.00}:ih*{rotation.Zoom:0.00}"));
+            videoFilters.Add(FormattableString.Invariant($"rotate={radians:0.0000}:fillcolor=black"));
+            videoFilters.Add(FormattableString.Invariant($"crop=iw/{rotation.Zoom:0.00}:ih/{rotation.Zoom:0.00}"));
+        }
+
+        if (summary.Downscale is not null)
+        {
+            videoFilters.Add("scale=-2:1080");
         }
 
         var videoNeedsReencode = videoFilters.Count > 0 || qrOverlayPath is not null;

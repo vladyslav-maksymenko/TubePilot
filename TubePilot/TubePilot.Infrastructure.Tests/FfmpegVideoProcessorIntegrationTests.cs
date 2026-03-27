@@ -30,10 +30,10 @@ public sealed class FfmpegVideoProcessorIntegrationTests
         });
 
         Assert.Single(outputs);
-        Assert.True(File.Exists(outputs[0]));
+        Assert.True(File.Exists(outputs[0].OutputPath));
         Assert.Contains(progressUpdates, progress => progress.Percent == 100);
         Assert.Contains(progressUpdates, progress => progress.Stage == VideoProcessingStage.Transform);
-        await AssertDifferentHashesAsync(inputPath, outputs[0]);
+        await AssertDifferentHashesAsync(inputPath, outputs[0].OutputPath);
     }
 
     [Fact]
@@ -105,12 +105,12 @@ public sealed class FfmpegVideoProcessorIntegrationTests
             using var provider = BuildProvider(processedDir);
             var processor = provider.GetRequiredService<IVideoProcessor>();
 
-            var outputs = await processor.ProcessAsync(inputPath, new HashSet<string> { "reduce_audio" }, _ => Task.CompletedTask);
+        var outputs = await processor.ProcessAsync(inputPath, new HashSet<string> { "reduce_audio" }, _ => Task.CompletedTask);
 
-            Assert.Single(outputs);
-            Assert.True(File.Exists(outputs[0]));
-            await AssertDifferentHashesAsync(inputPath, outputs[0]);
-        }
+        Assert.Single(outputs);
+        Assert.True(File.Exists(outputs[0].OutputPath));
+        await AssertDifferentHashesAsync(inputPath, outputs[0].OutputPath);
+    }
         finally
         {
             CultureInfo.CurrentCulture = previousCulture;
