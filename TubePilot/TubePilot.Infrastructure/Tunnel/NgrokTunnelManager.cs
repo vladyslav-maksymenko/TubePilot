@@ -5,7 +5,7 @@ using Microsoft.Extensions.Logging;
 
 namespace TubePilot.Infrastructure.Tunnel;
 
-internal sealed class NgrokTunnelManager : IAsyncDisposable
+internal sealed class NgrokTunnelManager(ILogger<NgrokTunnelManager> logger) : IAsyncDisposable
 {
     private const string NgrokApiUrl = "http://localhost:4040/api/tunnels";
 
@@ -13,7 +13,7 @@ internal sealed class NgrokTunnelManager : IAsyncDisposable
 
     public string? PublicUrl { get; private set; }
 
-    public async Task<string?> StartAsync(int localPort, string authToken, ILogger logger, CancellationToken ct = default)
+    public async Task<string?> StartAsync(int localPort, string authToken, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(authToken))
         {
@@ -23,7 +23,6 @@ internal sealed class NgrokTunnelManager : IAsyncDisposable
 
         try
         {
-            // Set authtoken
             var configProc = Process.Start(new ProcessStartInfo
             {
                 FileName = "ngrok",
@@ -35,7 +34,9 @@ internal sealed class NgrokTunnelManager : IAsyncDisposable
             });
 
             if (configProc is not null)
+            {
                 await configProc.WaitForExitAsync(ct);
+            }
 
             logger.LogInformation("[Ngrok] Starting tunnel on port {Port}...", localPort);
 
@@ -60,12 +61,16 @@ internal sealed class NgrokTunnelManager : IAsyncDisposable
             _process.ErrorDataReceived += (_, e) =>
             {
                 if (e.Data is not null)
+                {
                     logger.LogInformation("[ngrok] {Line}", e.Data);
+                }
             };
             _process.OutputDataReceived += (_, e) =>
             {
                 if (e.Data is not null)
+                {
                     logger.LogInformation("[ngrok:out] {Line}", e.Data);
+                }
             };
             _process.BeginErrorReadLine();
             _process.BeginOutputReadLine();
@@ -73,19 +78,29 @@ internal sealed class NgrokTunnelManager : IAsyncDisposable
             for (var i = 0; i < 30; i++)
             {
                 await Task.Delay(1000, ct);
+
                 if (_process.HasExited)
                 {
                     logger.LogWarning("[Ngrok] Process exited with code {Code}", _process.ExitCode);
                     return null;
                 }
-                PublicUrl = await TryGetUrlFromApi(logger);
-                if (PublicUrl is not null) break;
+
+                PublicUrl = await TryGetUrlFromApi();
+
+                if (PublicUrl is not null)
+                {
+                    break;
+                }
             }
 
             if (PublicUrl is not null)
+            {
                 logger.LogInformation("[Ngrok] Tunnel active: {Url}", PublicUrl);
+            }
             else
+            {
                 logger.LogWarning("[Ngrok] Failed to detect tunnel URL within timeout.");
+            }
 
             return PublicUrl;
         }
@@ -101,7 +116,7 @@ internal sealed class NgrokTunnelManager : IAsyncDisposable
         }
     }
 
-    private static async Task<string?> TryGetUrlFromApi(ILogger logger)
+    private async Task<string?> TryGetUrlFromApi()
     {
         try
         {
@@ -110,8 +125,12 @@ internal sealed class NgrokTunnelManager : IAsyncDisposable
             var url = response?.Tunnels?
                 .FirstOrDefault(t => t.PublicUrl?.StartsWith("https") == true)
                 ?.PublicUrl;
+
             if (url is null)
+            {
                 logger.LogInformation("[Ngrok] API responded, tunnels: {Count}, no HTTPS yet", response?.Tunnels?.Length ?? 0);
+            }
+
             return url;
         }
         catch (Exception ex)
@@ -128,6 +147,7 @@ internal sealed class NgrokTunnelManager : IAsyncDisposable
             p.Kill(entireProcessTree: true);
             await p.WaitForExitAsync();
         }
+
         _process?.Dispose();
     }
 

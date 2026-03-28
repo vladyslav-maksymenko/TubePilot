@@ -6,6 +6,7 @@ using TubePilot.Infrastructure.Drive.Options;
 using TubePilot.Infrastructure.Drive.State;
 using TubePilot.Infrastructure.Telegram;
 using TubePilot.Infrastructure.Telegram.Options;
+using TubePilot.Infrastructure.Tunnel;
 using TubePilot.Infrastructure.Video;
 
 namespace TubePilot.Infrastructure;
@@ -20,7 +21,8 @@ public static class ServiceCollectionExtensions
 
         services.Configure<TelegramOptions>(configuration.GetSection(TelegramOptions.SectionName));
         services.AddSingleton<IVideoProcessor, FfmpegVideoProcessor>();
-        
+        services.AddSingleton<NgrokTunnelManager>();
+
         services.AddSingleton<TelegramBotService>();
         services.AddHostedService(sp => sp.GetRequiredService<TelegramBotService>());
         services.AddSingleton<ITelegramBotService>(sp => sp.GetRequiredService<TelegramBotService>());

@@ -24,7 +24,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
     private readonly ConcurrentDictionary<int, VideoProcessingState> _userSelections = [];
     private readonly ConcurrentDictionary<int, Task> _activeJobs = [];
-    private readonly Tunnel.NgrokTunnelManager _tunnel = new();
+    private readonly Tunnel.NgrokTunnelManager _tunnel;
     private Task? _tunnelTask;
 
     private static readonly Dictionary<string, string> OptionLabels = new()
@@ -41,11 +41,12 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         { "downscale_1080p", "📐 Даунскейл 1080p" }
     };
 
-    public TelegramBotService(IOptionsMonitor<TelegramOptions> options, IVideoProcessor videoProcessor, ILogger<TelegramBotService> logger)
+    public TelegramBotService(IOptionsMonitor<TelegramOptions> options, IVideoProcessor videoProcessor, Tunnel.NgrokTunnelManager tunnel, ILogger<TelegramBotService> logger)
     {
         _videoProcessor = videoProcessor;
         _logger = logger;
         _telegramOptions = options;
+        _tunnel = tunnel;
         
         var token = options.CurrentValue.BotToken;
         if (string.IsNullOrWhiteSpace(token))
@@ -63,7 +64,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
         _botClient.StartReceiving(HandleUpdateAsync, HandleErrorAsync, receiverOptions, stoppingToken);
 
-        _tunnelTask = _tunnel.StartAsync(5000, _telegramOptions.CurrentValue.NgrokAuthToken ?? "", _logger, stoppingToken);
+        _tunnelTask = _tunnel.StartAsync(5000, _telegramOptions.CurrentValue.NgrokAuthToken ?? "", stoppingToken);
 
         var me = await _botClient.GetMe(stoppingToken);
         _logger.LogInformation("[Telegram] Bot @{Username} is listening for interactions...", me.Username);
