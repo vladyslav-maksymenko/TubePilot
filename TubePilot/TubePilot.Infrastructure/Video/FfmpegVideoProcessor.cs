@@ -131,7 +131,7 @@ internal sealed class FfmpegVideoProcessor(IOptionsMonitor<DriveOptions> options
         var args = new List<string> { "-i", inputPath };
 
         var filterParts = new List<string>();
-        string finalV = "0:v", finalA = "0:a";
+        string finalV = "0:v";
         var needsVideoEncode = false;
         var needsAudioEncode = false;
 
@@ -145,14 +145,13 @@ internal sealed class FfmpegVideoProcessor(IOptionsMonitor<DriveOptions> options
         if (afilters.Count > 0)
         {
             filterParts.Add($"[0:a]{string.Join(",", afilters)}[aout]");
-            finalA = "aout";
             needsAudioEncode = true;
         }
 
         if (filterParts.Count > 0)
         {
             args.AddRange(["-filter_complex", string.Join(";", filterParts)]);
-            args.AddRange(["-map", $"[{finalV}]", "-map", $"[{finalA}]"]);
+            args.AddRange(["-map", $"[{finalV}]"]);
 
             if (needsVideoEncode)
             {
@@ -164,7 +163,18 @@ internal sealed class FfmpegVideoProcessor(IOptionsMonitor<DriveOptions> options
                 args.AddRange(["-c:v", "copy"]);
             }
 
-            args.AddRange(needsAudioEncode ? ["-c:a", "aac", "-b:a", "192k"] : ["-c:a", "copy"]);
+            var hasAudio = await HasAudioStreamAsync(inputPath, ct);
+            if (hasAudio)
+            {
+                if (needsAudioEncode)
+                {
+                    args.AddRange(["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]);
+                }
+                else
+                {
+                    args.AddRange(["-map", "0:a", "-c:a", "copy"]);
+                }
+            }
         }
         else
         {
@@ -222,15 +232,41 @@ internal sealed class FfmpegVideoProcessor(IOptionsMonitor<DriveOptions> options
 
     private async Task<double> GetDurationAsync(string inputPath, CancellationToken ct)
     {
+        var info = await ProbeAsync(inputPath, ct);
+        var durationStr = info.RootElement.GetProperty("format").GetProperty("duration").GetString();
+        return double.Parse(durationStr!, CultureInfo.InvariantCulture);
+    }
+
+    private async Task<bool> HasAudioStreamAsync(string inputPath, CancellationToken ct)
+    {
+        var info = await ProbeAsync(inputPath, ct);
+        if (!info.RootElement.TryGetProperty("streams", out var streams))
+            return false;
+        foreach (var stream in streams.EnumerateArray())
+        {
+            if (stream.TryGetProperty("codec_type", out var codecType) && codecType.GetString() == "audio")
+                return true;
+        }
+        return false;
+    }
+
+    private async Task<JsonDocument> ProbeAsync(string inputPath, CancellationToken ct)
+    {
         var psi = new ProcessStartInfo
         {
             FileName = "ffprobe",
-            Arguments = $"-v quiet -print_format json -show_format \"{inputPath}\"",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true
         };
+        psi.ArgumentList.Add("-v");
+        psi.ArgumentList.Add("quiet");
+        psi.ArgumentList.Add("-print_format");
+        psi.ArgumentList.Add("json");
+        psi.ArgumentList.Add("-show_format");
+        psi.ArgumentList.Add("-show_streams");
+        psi.ArgumentList.Add(inputPath);
 
         using var proc = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start ffprobe");
         var output = await proc.StandardOutput.ReadToEndAsync(ct);
@@ -239,9 +275,7 @@ internal sealed class FfmpegVideoProcessor(IOptionsMonitor<DriveOptions> options
         if (proc.ExitCode != 0)
             throw new InvalidOperationException($"ffprobe failed with exit code {proc.ExitCode}");
 
-        using var doc = JsonDocument.Parse(output);
-        var durationStr = doc.RootElement.GetProperty("format").GetProperty("duration").GetString();
-        return double.Parse(durationStr!, CultureInfo.InvariantCulture);
+        return JsonDocument.Parse(output);
     }
 
     private async Task RunFfmpegAsync(List<string> args, double durationSec, Func<int, Task>? progressCallback, CancellationToken ct)
