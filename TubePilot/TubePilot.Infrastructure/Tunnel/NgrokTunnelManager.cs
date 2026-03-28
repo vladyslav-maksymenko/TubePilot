@@ -42,7 +42,7 @@ internal sealed class NgrokTunnelManager : IAsyncDisposable
             _process = Process.Start(new ProcessStartInfo
             {
                 FileName = "ngrok",
-                Arguments = $"http {localPort} --inspect=localhost:4040",
+                Arguments = $"http {localPort}",
                 RedirectStandardError = true,
                 RedirectStandardOutput = true,
                 UseShellExecute = false,
@@ -70,7 +70,7 @@ internal sealed class NgrokTunnelManager : IAsyncDisposable
             _process.BeginErrorReadLine();
             _process.BeginOutputReadLine();
 
-            for (var i = 0; i < 15; i++)
+            for (var i = 0; i < 30; i++)
             {
                 await Task.Delay(1000, ct);
                 if (_process.HasExited)
