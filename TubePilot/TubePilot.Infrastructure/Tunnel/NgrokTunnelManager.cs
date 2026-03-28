@@ -42,7 +42,7 @@ internal sealed class NgrokTunnelManager : IAsyncDisposable
             _process = Process.Start(new ProcessStartInfo
             {
                 FileName = "ngrok",
-                Arguments = $"http {localPort}",
+                Arguments = $"http {localPort} --inspect=localhost:4040",
                 RedirectStandardError = true,
                 RedirectStandardOutput = true,
                 UseShellExecute = false,
@@ -62,7 +62,13 @@ internal sealed class NgrokTunnelManager : IAsyncDisposable
                 if (e.Data is not null)
                     logger.LogInformation("[ngrok] {Line}", e.Data);
             };
+            _process.OutputDataReceived += (_, e) =>
+            {
+                if (e.Data is not null)
+                    logger.LogInformation("[ngrok:out] {Line}", e.Data);
+            };
             _process.BeginErrorReadLine();
+            _process.BeginOutputReadLine();
 
             for (var i = 0; i < 15; i++)
             {
@@ -99,7 +105,7 @@ internal sealed class NgrokTunnelManager : IAsyncDisposable
     {
         try
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
             var response = await http.GetFromJsonAsync<NgrokApiResponse>(NgrokApiUrl);
             var url = response?.Tunnels?
                 .FirstOrDefault(t => t.PublicUrl?.StartsWith("https") == true)
