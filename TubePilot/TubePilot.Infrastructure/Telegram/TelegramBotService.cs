@@ -24,7 +24,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
     private readonly ConcurrentDictionary<int, VideoProcessingState> _userSelections = [];
     private readonly ConcurrentDictionary<int, Task> _activeJobs = [];
-    private readonly Tunnel.CloudflareTunnelManager _tunnel = new();
+    private readonly Tunnel.NgrokTunnelManager _tunnel = new();
 
     private static readonly Dictionary<string, string> OptionLabels = new()
     {
@@ -62,7 +62,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
         _botClient.StartReceiving(HandleUpdateAsync, HandleErrorAsync, receiverOptions, stoppingToken);
 
-        await _tunnel.StartAsync(5000, _logger, stoppingToken);
+        await _tunnel.StartAsync(5000, _telegramOptions.CurrentValue.NgrokAuthToken ?? "", _logger, stoppingToken);
 
         var me = await _botClient.GetMe(stoppingToken);
         _logger.LogInformation("[Telegram] Bot @{Username} is listening for interactions...", me.Username);

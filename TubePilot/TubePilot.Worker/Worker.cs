@@ -52,13 +52,20 @@ public class Worker(
                         }
                     }
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
                 {
-                    logger.LogError(ex, "Critical error while polling Google Drive API.");
+                    logger.LogWarning(ex, "Transient error while polling Google Drive API. Will retry next cycle.");
                 }
             }
             
-            await Task.Delay(TimeSpan.FromSeconds(options.PollingIntervalSeconds), stoppingToken);
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(options.PollingIntervalSeconds), stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
         }
     }
 }

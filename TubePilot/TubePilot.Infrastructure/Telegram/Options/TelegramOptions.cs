@@ -8,5 +8,7 @@ public sealed record TelegramOptions
 
     public string BaseUrl { get; init; } = "http://localhost:5000";
 
+    public string? NgrokAuthToken { get; init; }
+
     public long? AllowedChatId { get; init; }
 }
