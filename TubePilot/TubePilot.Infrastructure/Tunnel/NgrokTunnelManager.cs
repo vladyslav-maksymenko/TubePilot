@@ -17,7 +17,7 @@ internal sealed class NgrokTunnelManager : IAsyncDisposable
     {
         if (string.IsNullOrWhiteSpace(authToken))
         {
-            logger.LogWarning("[Ngrok] NgrokAuthToken is missing. Tunnel disabled. See README for setup instructions.");
+            logger.LogWarning("[Ngrok] NgrokAuthToken is missing. Tunnel disabled. See NGROK_SETUP.md for instructions.");
             return null;
         }
 
@@ -37,30 +37,42 @@ internal sealed class NgrokTunnelManager : IAsyncDisposable
             if (configProc is not null)
                 await configProc.WaitForExitAsync(ct);
 
-            // Start tunnel
+            logger.LogInformation("[Ngrok] Starting tunnel on port {Port}...", localPort);
+
             _process = Process.Start(new ProcessStartInfo
             {
                 FileName = "ngrok",
-                Arguments = $"http {localPort} --log stderr",
+                Arguments = $"http {localPort}",
                 RedirectStandardError = true,
                 RedirectStandardOutput = true,
                 UseShellExecute = false,
                 CreateNoWindow = true
             });
 
-            if (_process is null) return null;
+            if (_process is null)
+            {
+                logger.LogWarning("[Ngrok] Failed to start ngrok process.");
+                return null;
+            }
+
+            logger.LogInformation("[Ngrok] Process started (PID: {Pid}). Waiting for tunnel...", _process.Id);
 
             _process.ErrorDataReceived += (_, e) =>
             {
                 if (e.Data is not null)
-                    logger.LogDebug("[ngrok] {Line}", e.Data);
+                    logger.LogInformation("[ngrok] {Line}", e.Data);
             };
             _process.BeginErrorReadLine();
 
             for (var i = 0; i < 15; i++)
             {
                 await Task.Delay(1000, ct);
-                PublicUrl = await TryGetUrlFromApi();
+                if (_process.HasExited)
+                {
+                    logger.LogWarning("[Ngrok] Process exited with code {Code}", _process.ExitCode);
+                    return null;
+                }
+                PublicUrl = await TryGetUrlFromApi(logger);
                 if (PublicUrl is not null) break;
             }
 
@@ -73,7 +85,7 @@ internal sealed class NgrokTunnelManager : IAsyncDisposable
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception)
         {
-            logger.LogWarning("[Ngrok] ngrok not found in PATH. Tunnel disabled. See README for setup instructions.");
+            logger.LogWarning("[Ngrok] ngrok not found in PATH. Tunnel disabled. See NGROK_SETUP.md for instructions.");
             return null;
         }
         catch (Exception ex)
@@ -83,18 +95,22 @@ internal sealed class NgrokTunnelManager : IAsyncDisposable
         }
     }
 
-    private static async Task<string?> TryGetUrlFromApi()
+    private static async Task<string?> TryGetUrlFromApi(ILogger logger)
     {
         try
         {
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
             var response = await http.GetFromJsonAsync<NgrokApiResponse>(NgrokApiUrl);
-            return response?.Tunnels?
+            var url = response?.Tunnels?
                 .FirstOrDefault(t => t.PublicUrl?.StartsWith("https") == true)
                 ?.PublicUrl;
+            if (url is null)
+                logger.LogInformation("[Ngrok] API responded, tunnels: {Count}, no HTTPS yet", response?.Tunnels?.Length ?? 0);
+            return url;
         }
-        catch
+        catch (Exception ex)
         {
+            logger.LogInformation("[Ngrok] API not ready: {Msg}", ex.Message);
             return null;
         }
     }
