@@ -75,21 +75,21 @@ internal sealed class FfmpegVideoProcessor(IOptionsMonitor<DriveOptions> options
 
                 case "reduce_audio":
                     var vol = 0.80 + rng.NextDouble() * 0.10; // 0.80-0.90
-                    afilters.Add($"volume={vol:F2}");
+                    afilters.Add(string.Create(CultureInfo.InvariantCulture, $"volume={vol:F2}"));
                     suffixParts.Add($"vol{(int)(vol * 100)}");
                     break;
 
                 case "slow_down":
                     var slowFactor = 1.04 + rng.NextDouble() * 0.03; // 1.04-1.07
-                    vfilters.Insert(0, $"setpts={slowFactor:F4}*PTS");
-                    afilters.Insert(0, $"atempo={1.0 / slowFactor:F4}");
+                    vfilters.Insert(0, string.Create(CultureInfo.InvariantCulture, $"setpts={slowFactor:F4}*PTS"));
+                    afilters.Insert(0, string.Create(CultureInfo.InvariantCulture, $"atempo={1.0 / slowFactor:F4}"));
                     suffixParts.Add($"slow{(int)(slowFactor * 100)}");
                     break;
 
                 case "speed_up":
                     var speedFactor = 1.03 + rng.NextDouble() * 0.02; // 1.03-1.05
-                    vfilters.Insert(0, $"setpts={1.0 / speedFactor:F4}*PTS");
-                    afilters.Insert(0, $"atempo={speedFactor:F4}");
+                    vfilters.Insert(0, string.Create(CultureInfo.InvariantCulture, $"setpts={1.0 / speedFactor:F4}*PTS"));
+                    afilters.Insert(0, string.Create(CultureInfo.InvariantCulture, $"atempo={speedFactor:F4}"));
                     suffixParts.Add($"fast{(int)(speedFactor * 100)}");
                     break;
 
@@ -97,7 +97,7 @@ internal sealed class FfmpegVideoProcessor(IOptionsMonitor<DriveOptions> options
                     var sat = 1.0 + 0.04 + rng.NextDouble() * 0.03;    // +4-7%
                     var bright = -(0.04 + rng.NextDouble() * 0.03);     // -4-7%
                     var gamma = 1.0 - (0.01 + rng.NextDouble() * 0.02); // -1-3%
-                    vfilters.Add($"eq=saturation={sat:F3}:brightness={bright:F3}:gamma={gamma:F3}");
+                    vfilters.Add(string.Create(CultureInfo.InvariantCulture, $"eq=saturation={sat:F3}:brightness={bright:F3}:gamma={gamma:F3}"));
                     suffixParts.Add("color");
                     break;
 
@@ -105,9 +105,9 @@ internal sealed class FfmpegVideoProcessor(IOptionsMonitor<DriveOptions> options
                     var degrees = 3.0 + rng.NextDouble() * 2.0; // 3-5°
                     var radians = degrees * Math.PI / 180;
                     var zoom = 1.0 + 0.10 + rng.NextDouble() * 0.05; // 10-15% zoom
-                    vfilters.Add($"scale=iw*{zoom:F2}:ih*{zoom:F2}");
-                    vfilters.Add($"rotate={radians:F4}:fillcolor=black");
-                    vfilters.Add($"crop=iw/{zoom:F2}:ih/{zoom:F2}");
+                    vfilters.Add(string.Create(CultureInfo.InvariantCulture, $"scale=iw*{zoom:F2}:ih*{zoom:F2}"));
+                    vfilters.Add(string.Create(CultureInfo.InvariantCulture, $"rotate={radians:F4}:fillcolor=black"));
+                    vfilters.Add(string.Create(CultureInfo.InvariantCulture, $"crop=iw/{zoom:F2}:ih/{zoom:F2}"));
                     suffixParts.Add($"rot{(int)degrees}");
                     break;
 
