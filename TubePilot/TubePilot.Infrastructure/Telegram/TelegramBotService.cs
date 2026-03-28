@@ -25,6 +25,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     private readonly ConcurrentDictionary<int, VideoProcessingState> _userSelections = [];
     private readonly ConcurrentDictionary<int, Task> _activeJobs = [];
     private readonly Tunnel.NgrokTunnelManager _tunnel = new();
+    private Task? _tunnelTask;
 
     private static readonly Dictionary<string, string> OptionLabels = new()
     {
@@ -62,7 +63,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
         _botClient.StartReceiving(HandleUpdateAsync, HandleErrorAsync, receiverOptions, stoppingToken);
 
-        await _tunnel.StartAsync(5000, _telegramOptions.CurrentValue.NgrokAuthToken ?? "", _logger, stoppingToken);
+        _tunnelTask = _tunnel.StartAsync(5000, _telegramOptions.CurrentValue.NgrokAuthToken ?? "", _logger, stoppingToken);
 
         var me = await _botClient.GetMe(stoppingToken);
         _logger.LogInformation("[Telegram] Bot @{Username} is listening for interactions...", me.Username);
@@ -266,14 +267,16 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             foreach (var res in results)
             {
                 var fileName = Path.GetFileName(res) ?? res;
+                if (_tunnelTask is not null) await _tunnelTask;
                 var baseUrl = (_tunnel.PublicUrl ?? _telegramOptions.CurrentValue.BaseUrl).TrimEnd('/');
                 var url = $"{baseUrl}/play/{Uri.EscapeDataString(fileName)}";
 
                 var msgText = $"🎬 <b>ГОТОВИЙ ФАЙЛ:</b>\n<code>{EscapeHtml(fileName)}</code>";
-                var buttons = new InlineKeyboardMarkup([
-                    [InlineKeyboardButton.WithUrl("▶️ ДИВИТИСЬ РЕЗУЛЬТАТ", url)],
-                    [InlineKeyboardButton.WithCopyText("📋 СКОПІЮВАТИ ПОСИЛАННЯ", url)]
-                ]);
+                var rows = new List<InlineKeyboardButton[]>();
+                if (_tunnel.PublicUrl is not null)
+                    rows.Add([InlineKeyboardButton.WithUrl("▶️ ДИВИТИСЬ РЕЗУЛЬТАТ", url)]);
+                rows.Add([InlineKeyboardButton.WithCopyText("📋 СКОПІЮВАТИ ПОСИЛАННЯ", url)]);
+                var buttons = new InlineKeyboardMarkup(rows);
                 
                 await _botClient.SendMessage(chatId, msgText, parseMode: ParseMode.Html, replyMarkup: buttons, cancellationToken: ct);
             }
