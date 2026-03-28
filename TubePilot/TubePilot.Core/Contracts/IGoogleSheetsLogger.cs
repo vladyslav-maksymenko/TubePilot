@@ -3,6 +3,7 @@ namespace TubePilot.Core.Contracts;
 public interface IGoogleSheetsLogger
 {
     Task LogUploadAsync(
+        string channel,
         string sourceFile,
         string title,
         string youtubeId,

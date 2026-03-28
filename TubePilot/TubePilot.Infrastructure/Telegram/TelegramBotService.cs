@@ -1126,6 +1126,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 ct);
 
             await _googleSheetsLogger.LogUploadAsync(
+                NormalizeChannelName(session.ChannelName),
                 session.ResultContext.SourceFileName,
                 session.Title,
                 result.VideoId,
@@ -1208,6 +1209,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                     ct);
 
                 await _googleSheetsLogger.LogUploadAsync(
+                    NormalizeChannelName(session.ChannelName),
                     context.SourceFileName,
                     title,
                     result.VideoId,

@@ -449,11 +449,11 @@ public sealed class TelegramPublishWizardIntegrationTests
 
     private sealed class FakeSheetsLogger : IGoogleSheetsLogger
     {
-        public List<(string SourceFile, string Title, string YoutubeId, string YoutubeUrl, string Status, DateTimeOffset? ScheduledAtUtc)> Calls { get; } = [];
+        public List<(string Channel, string SourceFile, string Title, string YoutubeId, string YoutubeUrl, string Status, DateTimeOffset? ScheduledAtUtc)> Calls { get; } = [];
 
-        public Task LogUploadAsync(string sourceFile, string title, string youtubeId, string youtubeUrl, string status, DateTimeOffset? scheduledAtUtc, CancellationToken ct = default)
+        public Task LogUploadAsync(string channel, string sourceFile, string title, string youtubeId, string youtubeUrl, string status, DateTimeOffset? scheduledAtUtc, CancellationToken ct = default)
         {
-            Calls.Add((sourceFile, title, youtubeId, youtubeUrl, status, scheduledAtUtc));
+            Calls.Add((channel, sourceFile, title, youtubeId, youtubeUrl, status, scheduledAtUtc));
             return Task.CompletedTask;
         }
     }

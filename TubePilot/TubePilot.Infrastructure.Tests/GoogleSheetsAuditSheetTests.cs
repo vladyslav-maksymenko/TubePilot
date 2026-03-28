@@ -8,7 +8,7 @@ public sealed class GoogleSheetsAuditSheetTests
     [Fact]
     public void AnalyzeHeaderRow_WhenExpectedHeader_ReturnsExpected()
     {
-        var row = GoogleSheetsAuditSheet.HeaderValues.Cast<object>().ToList();
+        var row = GoogleSheetsAuditSheet.HeaderKeys.Cast<object>().ToList();
         var kind = GoogleSheetsAuditSheet.AnalyzeHeaderRow(row);
         Assert.Equal(GoogleSheetsAuditSheet.HeaderKind.Expected, kind);
     }
@@ -18,6 +18,7 @@ public sealed class GoogleSheetsAuditSheetTests
     {
         var row = GoogleSheetsAuditSheet.BuildAuditRow(
             DateTimeOffset.Parse("2026-03-27T08:15:30+00:00"),
+            "My Channel",
             "source.mp4",
             "My title",
             "abc123",
@@ -28,13 +29,13 @@ public sealed class GoogleSheetsAuditSheetTests
         Assert.Collection(
             row.Values!,
             cell => Assert.Equal("2026-03-27T08:15:30Z", cell.UserEnteredValue?.StringValue),
-            cell => Assert.Equal(string.Empty, cell.UserEnteredValue?.StringValue),
+            cell => Assert.Equal("My Channel", cell.UserEnteredValue?.StringValue),
             cell => Assert.Equal("source.mp4", cell.UserEnteredValue?.StringValue),
             cell => Assert.Equal("My title", cell.UserEnteredValue?.StringValue),
             cell => Assert.Equal("abc123", cell.UserEnteredValue?.StringValue),
             cell =>
             {
-                Assert.Equal("=HYPERLINK(\"https://youtube.test/watch?v=abc123\",\"https://youtube.test/watch?v=abc123\")", cell.UserEnteredValue?.FormulaValue);
+                Assert.Equal("=HYPERLINK(\"https://youtube.test/watch?v=abc123\",\"Відкрити\")", cell.UserEnteredValue?.FormulaValue);
             },
             cell => Assert.Equal("published", cell.UserEnteredValue?.StringValue),
             cell => Assert.Equal("2026-03-28T10:00:00Z", cell.UserEnteredValue?.StringValue),
@@ -51,16 +52,18 @@ public sealed class GoogleSheetsAuditSheetTests
 
         Assert.Equal(1, requests.Count(r => r.ClearBasicFilter is not null));
         Assert.Equal(1, requests.Count(r => r.UpdateSheetProperties is not null));
+        Assert.Equal(1, requests.Count(r => r.AddBanding is not null));
         Assert.Equal(1, requests.Count(r => r.UpdateCells is not null));
         Assert.Equal(3, requests.Count(r => r.RepeatCell is not null));
+        Assert.Equal(1, requests.Count(r => r.SetDataValidation is not null));
         Assert.Equal(1, requests.Count(r => r.SetBasicFilter is not null));
-        Assert.Equal(GoogleSheetsAuditSheet.ColumnCount, requests.Count(r => r.UpdateDimensionProperties is not null));
+        Assert.Equal(GoogleSheetsAuditSheet.ColumnCount + 1, requests.Count(r => r.UpdateDimensionProperties is not null));
         Assert.Equal(2, requests.Count(r => r.DeleteConditionalFormatRule is not null));
         Assert.Equal(3, requests.Count(r => r.AddConditionalFormatRule is not null));
 
         var headerRequest = Assert.Single(requests, r => r.UpdateCells is not null).UpdateCells!;
         var headerValues = headerRequest.Rows!.Single().Values!.Select(cell => cell.UserEnteredValue?.StringValue ?? string.Empty).ToArray();
-        Assert.Equal(GoogleSheetsAuditSheet.HeaderValues, headerValues);
+        Assert.Equal(GoogleSheetsAuditSheet.HeaderDisplayValues, headerValues);
 
         var statusRules = requests.Where(r => r.AddConditionalFormatRule is not null).Select(r => r.AddConditionalFormatRule!.Rule!).ToArray();
         Assert.Contains(statusRules, rule => HasStatusRule(rule, "published", 0.86, 0.94, 0.86));

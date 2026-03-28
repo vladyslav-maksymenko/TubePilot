@@ -87,6 +87,7 @@ public sealed class GoogleSheetsLoggerIntegrationTests
             service);
 
         await logger.LogUploadAsync(
+            "TestChannel",
             "source.mp4",
             "My title",
             "abc123",
@@ -96,6 +97,7 @@ public sealed class GoogleSheetsLoggerIntegrationTests
             CancellationToken.None);
 
         await logger.LogUploadAsync(
+            "TestChannel",
             "source2.mp4",
             "My title 2",
             "def456",
@@ -157,6 +159,7 @@ public sealed class GoogleSheetsLoggerIntegrationTests
             service);
 
         await logger.LogUploadAsync(
+            "Default",
             "source.mp4",
             "My title",
             "abc123",
@@ -222,6 +225,7 @@ public sealed class GoogleSheetsLoggerIntegrationTests
             service);
 
         await logger.LogUploadAsync(
+            "Default",
             "source.mp4",
             "My title",
             "abc123",
@@ -291,6 +295,7 @@ public sealed class GoogleSheetsLoggerIntegrationTests
             service);
 
         await logger.LogUploadAsync(
+            "Default",
             "source.mp4",
             "My title",
             "abc123",

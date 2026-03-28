@@ -43,6 +43,7 @@ internal sealed class GoogleSheetsLogger : IGoogleSheetsLogger
     }
 
     public async Task LogUploadAsync(
+        string channel,
         string sourceFile,
         string title,
         string youtubeId,
@@ -80,6 +81,7 @@ internal sealed class GoogleSheetsLogger : IGoogleSheetsLogger
                 [
                     GoogleSheetsAuditSheet.BuildAuditRow(
                         DateTimeOffset.UtcNow,
+                        channel,
                         sourceFile,
                         title,
                         youtubeId,
@@ -132,7 +134,7 @@ internal sealed class GoogleSheetsLogger : IGoogleSheetsLogger
             }
 
             var spreadsheetRequest = service.Spreadsheets.Get(spreadsheetId);
-            spreadsheetRequest.Fields = "sheets(properties,conditionalFormats)";
+            spreadsheetRequest.Fields = "sheets(properties,conditionalFormats,bandedRanges)";
             var spreadsheet = await spreadsheetRequest.ExecuteAsync(ct);
             var sheet = spreadsheet.Sheets?.FirstOrDefault(s =>
                 string.Equals(s.Properties?.Title, sheetName, StringComparison.OrdinalIgnoreCase));
@@ -184,6 +186,24 @@ internal sealed class GoogleSheetsLogger : IGoogleSheetsLogger
                     headerKind,
                     hasAnyFirstRowValues,
                     existingColumnCount));
+            if (sheet.BandedRanges is not null)
+            {
+                foreach (var bandedRange in sheet.BandedRanges)
+                {
+                    if (bandedRange?.BandedRangeId is not int bandedRangeId)
+                    {
+                        continue;
+                    }
+
+                    normalizationRequests.Add(new Request
+                    {
+                        DeleteBanding = new DeleteBandingRequest
+                        {
+                            BandedRangeId = bandedRangeId
+                        }
+                    });
+                }
+            }
             normalizationRequests.AddRange(GoogleSheetsAuditSheet.BuildNormalizationRequests(sheetId, existingRuleCount));
             if (normalizationRequests.Count > 0)
             {

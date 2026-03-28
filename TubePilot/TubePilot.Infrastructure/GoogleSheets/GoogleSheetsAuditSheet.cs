@@ -14,7 +14,7 @@ internal static class GoogleSheetsAuditSheet
         DataOrMissing = 2
     }
 
-    internal static readonly IReadOnlyList<string> HeaderValues =
+    internal static readonly IReadOnlyList<string> HeaderKeys =
     [
         "ts_utc",
         "channel",
@@ -26,6 +26,20 @@ internal static class GoogleSheetsAuditSheet
         "scheduled_at_utc",
         "quota_used",
         "notes"
+    ];
+
+    internal static readonly IReadOnlyList<string> HeaderDisplayValues =
+    [
+        "Час (UTC)",
+        "Канал",
+        "Файл (source)",
+        "Заголовок (title)",
+        "YouTube ID",
+        "YouTube URL",
+        "Статус",
+        "Заплановано (UTC)",
+        "Квота",
+        "Нотатки"
     ];
 
     private static readonly int[] ColumnWidths =
@@ -54,6 +68,20 @@ internal static class GoogleSheetsAuditSheet
         Red = 0.12f,
         Green = 0.12f,
         Blue = 0.12f
+    };
+
+    private static readonly Color BandedRowColor1 = new()
+    {
+        Red = 0.98f,
+        Green = 0.98f,
+        Blue = 0.98f
+    };
+
+    private static readonly Color BandedRowColor2 = new()
+    {
+        Red = 1.00f,
+        Green = 1.00f,
+        Blue = 1.00f
     };
 
     private static readonly Color PublishedBackground = new()
@@ -95,8 +123,14 @@ internal static class GoogleSheetsAuditSheet
             return HeaderKind.DataOrMissing;
         }
 
-        if (normalized.Length == HeaderValues.Count &&
-            normalized.SequenceEqual(HeaderValues.Select(static header => header.ToLowerInvariant())))
+        if (normalized.Length == HeaderKeys.Count &&
+            normalized.SequenceEqual(HeaderKeys.Select(static header => header.ToLowerInvariant())))
+        {
+            return HeaderKind.Expected;
+        }
+
+        if (normalized.Length == HeaderDisplayValues.Count &&
+            normalized.SequenceEqual(HeaderDisplayValues.Select(static header => header.ToLowerInvariant())))
         {
             return HeaderKind.Expected;
         }
@@ -181,6 +215,7 @@ internal static class GoogleSheetsAuditSheet
 
     internal static RowData BuildAuditRow(
         DateTimeOffset timestampUtc,
+        string channel,
         string sourceFile,
         string title,
         string youtubeId,
@@ -193,7 +228,7 @@ internal static class GoogleSheetsAuditSheet
             Values =
             [
                 TextCell(FormatUtc(timestampUtc)),
-                TextCell(string.Empty),
+                TextCell(channel),
                 TextCell(sourceFile),
                 TextCell(title),
                 TextCell(youtubeId),
@@ -219,6 +254,28 @@ internal static class GoogleSheetsAuditSheet
             },
             new()
             {
+                AddBanding = new AddBandingRequest
+                {
+                    BandedRange = new BandedRange
+                    {
+                        Range = new GridRange
+                        {
+                            SheetId = sheetId,
+                            StartRowIndex = 0,
+                            StartColumnIndex = 0,
+                            EndColumnIndex = ColumnCount
+                        },
+                        RowProperties = new BandingProperties
+                        {
+                            FirstBandColor = BandedRowColor1,
+                            SecondBandColor = BandedRowColor2,
+                            HeaderColor = HeaderBackground
+                        }
+                    }
+                }
+            },
+            new()
+            {
                 UpdateSheetProperties = new UpdateSheetPropertiesRequest
                 {
                     Properties = new SheetProperties
@@ -230,6 +287,24 @@ internal static class GoogleSheetsAuditSheet
                         }
                     },
                     Fields = "gridProperties.frozenRowCount"
+                }
+            },
+            new()
+            {
+                UpdateDimensionProperties = new UpdateDimensionPropertiesRequest
+                {
+                    Range = new DimensionRange
+                    {
+                        SheetId = sheetId,
+                        Dimension = "ROWS",
+                        StartIndex = 0,
+                        EndIndex = 1
+                    },
+                    Properties = new DimensionProperties
+                    {
+                        PixelSize = 44
+                    },
+                    Fields = "pixelSize"
                 }
             },
             new()
@@ -246,7 +321,7 @@ internal static class GoogleSheetsAuditSheet
                     [
                         new RowData
                         {
-                            Values = HeaderValues.Select(TextCell).ToList()
+                            Values = HeaderDisplayValues.Select(TextCell).ToList()
                         }
                     ],
                     Fields = "userEnteredValue"
@@ -279,6 +354,34 @@ internal static class GoogleSheetsAuditSheet
                         }
                     },
                     Fields = "userEnteredFormat"
+                }
+            },
+            new()
+            {
+                SetDataValidation = new SetDataValidationRequest
+                {
+                    Range = new GridRange
+                    {
+                        SheetId = sheetId,
+                        StartRowIndex = 1,
+                        StartColumnIndex = 6,
+                        EndColumnIndex = 7
+                    },
+                    Rule = new DataValidationRule
+                    {
+                        Condition = new BooleanCondition
+                        {
+                            Type = "ONE_OF_LIST",
+                            Values =
+                            [
+                                new ConditionValue { UserEnteredValue = "published" },
+                                new ConditionValue { UserEnteredValue = "scheduled" },
+                                new ConditionValue { UserEnteredValue = "failed" }
+                            ]
+                        },
+                        Strict = true,
+                        ShowCustomUi = true
+                    }
                 }
             },
             new()
@@ -441,7 +544,7 @@ internal static class GoogleSheetsAuditSheet
         }
 
         var escaped = EscapeFormulaText(url);
-        return $"=HYPERLINK(\"{escaped}\",\"{escaped}\")";
+        return $"=HYPERLINK(\"{escaped}\",\"Відкрити\")";
     }
 
     private static string EscapeFormulaText(string value)
