@@ -10,6 +10,7 @@ using TubePilot.Infrastructure.GoogleSheets;
 using TubePilot.Infrastructure.GoogleSheets.Options;
 using TubePilot.Infrastructure.Telegram;
 using TubePilot.Infrastructure.Telegram.Options;
+using TubePilot.Infrastructure.Tunnel;
 using TubePilot.Infrastructure.Video;
 using TubePilot.Infrastructure.YouTube;
 using TubePilot.Infrastructure.YouTube.Options;
@@ -60,7 +61,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IYouTubeAccessTokenProvider>(sp => sp.GetRequiredService<OAuthRefreshTokenAccessTokenProvider>());
         services.AddHttpClient<IYouTubeChannelLookup, YouTubeChannelLookup>(client => client.Timeout = TimeSpan.FromSeconds(30));
         services.AddHttpClient<IYouTubeUploader, YouTubeUploader>(client => client.Timeout = Timeout.InfiniteTimeSpan);
-        
+        services.AddSingleton<NgrokTunnelManager>();
         services.AddSingleton<TelegramBotService>();
         services.AddHostedService(sp => sp.GetRequiredService<TelegramBotService>());
         services.AddSingleton<ITelegramBotService>(sp => sp.GetRequiredService<TelegramBotService>());

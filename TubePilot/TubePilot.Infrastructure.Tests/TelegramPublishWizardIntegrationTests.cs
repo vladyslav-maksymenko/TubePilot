@@ -9,6 +9,7 @@ using TubePilot.Core.Contracts;
 using TubePilot.Infrastructure.Telegram;
 using TubePilot.Infrastructure.Telegram.Models;
 using TubePilot.Infrastructure.Telegram.Options;
+using TubePilot.Infrastructure.Tunnel;
 using TubePilot.Infrastructure.YouTube;
 using TubePilot.Infrastructure.YouTube.Options;
 
@@ -332,6 +333,7 @@ public sealed class TelegramPublishWizardIntegrationTests
             new FakeYouTubeChannelLookup(),
             processingQueue,
             publishQueue,
+            new NgrokTunnelManager(NullLogger<NgrokTunnelManager>.Instance),
             resultCardPublisher,
             new FakeThumbnailGenerator(),
             timeProvider,

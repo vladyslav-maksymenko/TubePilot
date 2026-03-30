@@ -13,6 +13,7 @@ using Telegram.Bot.Types.ReplyMarkups;
 using TubePilot.Core.Contracts;
 using TubePilot.Infrastructure.Telegram.Models;
 using TubePilot.Infrastructure.Telegram.Options;
+using TubePilot.Infrastructure.Tunnel;
 using TubePilot.Infrastructure.YouTube;
 using TubePilot.Infrastructure.YouTube.Options;
 using DriveFile = TubePilot.Core.Domain.DriveFile;
@@ -40,6 +41,8 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     private readonly IOptionsMonitor<TelegramOptions> _telegramOptions;
     private readonly IOptionsMonitor<PublishingOptions> _publishingOptions;
     private readonly IOptionsMonitor<YouTubeOptions> _youTubeOptions;
+    private readonly NgrokTunnelManager _tunnel;
+    private Task<string?>? _tunnelTask;
     private CancellationToken _serviceStoppingToken;
 
     private readonly ConcurrentDictionary<(long ChatId, int MessageId), VideoProcessingState> _userSelections = [];
@@ -77,6 +80,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         IYouTubeChannelLookup youTubeChannelLookup,
         TelegramProcessingQueue processingQueue,
         TelegramPublishQueue publishQueue,
+        NgrokTunnelManager tunnel,
         TelegramResultCardPublisher resultCardPublisher,
         ITelegramResultThumbnailGenerator thumbnailGenerator,
         TimeProvider timeProvider,
@@ -88,6 +92,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         _youTubeChannelLookup = youTubeChannelLookup;
         _processingQueue = processingQueue;
         _publishQueue = publishQueue;
+        _tunnel = tunnel;
         _resultCardPublisher = resultCardPublisher;
         _thumbnailGenerator = thumbnailGenerator;
         _timeProvider = timeProvider;
@@ -108,6 +113,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         };
 
         _botClient.StartReceiving(HandleUpdateAsync, HandleErrorAsync, receiverOptions, stoppingToken);
+        _tunnelTask = _tunnel.StartAsync(5000, _telegramOptions.CurrentValue.NgrokAuthToken ?? "", stoppingToken);
 
         var me = await _botClient.GetMe(stoppingToken);
         _logger.LogInformation("[Telegram] Bot @{Username} is listening for interactions...", me.Username);
@@ -1478,7 +1484,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
     private string BuildPublicResultUrl(string fileName)
     {
-        var baseUrl = _telegramOptions.CurrentValue.BaseUrl?.TrimEnd('/') ?? string.Empty;
+        var baseUrl = (_tunnel.PublicUrl ?? _telegramOptions.CurrentValue.BaseUrl)?.TrimEnd('/') ?? string.Empty;
         return TelegramResultLinks.BuildPublicResultUrl(baseUrl, fileName);
     }
 
@@ -1496,6 +1502,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             await Task.WhenAll(_activePublishJobs.Values);
         }
 
+        await _tunnel.DisposeAsync();
         await base.StopAsync(cancellationToken);
     }
 
