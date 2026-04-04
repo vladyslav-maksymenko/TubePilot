@@ -321,6 +321,15 @@ public sealed class TelegramPublishWizardIntegrationTests
             new FakeDelay(),
             NullLogger<TelegramResultCardPublisher>.Instance);
 
+        var uploadJobRunner = new TelegramUploadJobRunner(
+            uiClient,
+            youTubeUploader,
+            sheetsLogger,
+            new FakeThumbnailGenerator(),
+            publishingOptions,
+            youTubeOptions,
+            NullLogger<TelegramUploadJobRunner>.Instance);
+
         return new TelegramBotService(
             telegramOptions,
             publishingOptions,
@@ -328,14 +337,12 @@ public sealed class TelegramPublishWizardIntegrationTests
             botClient,
             uiClient,
             new FakeVideoProcessor(),
-            youTubeUploader,
-            sheetsLogger,
             new FakeYouTubeChannelLookup(),
             processingQueue,
             publishQueue,
-            new NgrokTunnelManager(NullLogger<NgrokTunnelManager>.Instance),
+            new NgrokTunnelManager(new FakeHttpClientFactory(), NullLogger<NgrokTunnelManager>.Instance),
             resultCardPublisher,
-            new FakeThumbnailGenerator(),
+            uploadJobRunner,
             timeProvider,
             NullLogger<TelegramBotService>.Instance);
     }
@@ -621,5 +628,10 @@ public sealed class TelegramPublishWizardIntegrationTests
         public sealed record EditMessageTextCall(int MessageId, string Text);
 
         public sealed record AnswerCallbackQueryCall(string Id, string? Text, bool ShowAlert);
+    }
+
+    private sealed class FakeHttpClientFactory : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new();
     }
 }

@@ -51,6 +51,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ITelegramUiClient, TelegramUiClient>();
         services.AddSingleton<ITelegramResultThumbnailGenerator, TelegramResultThumbnailGenerator>();
         services.AddSingleton<TelegramResultCardPublisher>();
+        services.AddSingleton<TelegramUploadJobRunner>();
         services.AddSingleton<IFfmpegRunner, FfmpegRunner>();
         services.AddSingleton<IVideoProcessor, FfmpegVideoProcessor>();
         services.AddSingleton<IGoogleSheetsLogger, GoogleSheetsLogger>();

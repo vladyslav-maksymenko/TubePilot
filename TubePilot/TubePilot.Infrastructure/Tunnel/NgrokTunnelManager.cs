@@ -5,7 +5,7 @@ using Microsoft.Extensions.Logging;
 
 namespace TubePilot.Infrastructure.Tunnel;
 
-internal sealed class NgrokTunnelManager(ILogger<NgrokTunnelManager> logger) : IAsyncDisposable
+internal sealed class NgrokTunnelManager(IHttpClientFactory httpClientFactory, ILogger<NgrokTunnelManager> logger) : IAsyncDisposable
 {
     private const string NgrokApiUrl = "http://localhost:4040/api/tunnels";
 
@@ -120,7 +120,8 @@ internal sealed class NgrokTunnelManager(ILogger<NgrokTunnelManager> logger) : I
     {
         try
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            using var http = httpClientFactory.CreateClient("Ngrok");
+            http.Timeout = TimeSpan.FromSeconds(5);
             var response = await http.GetFromJsonAsync<NgrokApiResponse>(NgrokApiUrl);
             var url = response?.Tunnels?
                 .FirstOrDefault(t => t.PublicUrl?.StartsWith("https") == true)

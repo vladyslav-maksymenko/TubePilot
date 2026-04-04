@@ -29,13 +29,11 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     private readonly ITelegramBotClient _botClient;
     private readonly ITelegramUiClient _ui;
     private readonly IVideoProcessor _videoProcessor;
-    private readonly IYouTubeUploader _youTubeUploader;
-    private readonly IGoogleSheetsLogger _googleSheetsLogger;
     private readonly IYouTubeChannelLookup _youTubeChannelLookup;
     private readonly TelegramProcessingQueue _processingQueue;
     private readonly TelegramPublishQueue _publishQueue;
     private readonly TelegramResultCardPublisher _resultCardPublisher;
-    private readonly ITelegramResultThumbnailGenerator _thumbnailGenerator;
+    private readonly TelegramUploadJobRunner _uploadJobRunner;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<TelegramBotService> _logger;
     private readonly IOptionsMonitor<TelegramOptions> _telegramOptions;
@@ -75,26 +73,22 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         ITelegramBotClient botClient,
         ITelegramUiClient uiClient,
         IVideoProcessor videoProcessor,
-        IYouTubeUploader youTubeUploader,
-        IGoogleSheetsLogger googleSheetsLogger,
         IYouTubeChannelLookup youTubeChannelLookup,
         TelegramProcessingQueue processingQueue,
         TelegramPublishQueue publishQueue,
         NgrokTunnelManager tunnel,
         TelegramResultCardPublisher resultCardPublisher,
-        ITelegramResultThumbnailGenerator thumbnailGenerator,
+        TelegramUploadJobRunner uploadJobRunner,
         TimeProvider timeProvider,
         ILogger<TelegramBotService> logger)
     {
         _videoProcessor = videoProcessor;
-        _youTubeUploader = youTubeUploader;
-        _googleSheetsLogger = googleSheetsLogger;
         _youTubeChannelLookup = youTubeChannelLookup;
         _processingQueue = processingQueue;
         _publishQueue = publishQueue;
         _tunnel = tunnel;
         _resultCardPublisher = resultCardPublisher;
-        _thumbnailGenerator = thumbnailGenerator;
+        _uploadJobRunner = uploadJobRunner;
         _timeProvider = timeProvider;
         _logger = logger;
         _telegramOptions = options;
@@ -1057,7 +1051,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         return _ui.EditMessageTextAsync(
             session.ChatId,
             session.ProgressMessageId.Value,
-            BuildProgressText(session, 0),
+            TelegramUploadJobRunner.BuildProgressText(session, 0),
             parseMode: ParseMode.Html,
             ct: ct);
     }
@@ -1081,27 +1075,11 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     {
         try
         {
-            if (session.IsBulkPublish)
-            {
-                await RunBulkUploadJobAsync(session, ct);
-            }
-            else
-            {
-                await RunSingleUploadJobAsync(session, ct);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            await SendUploadCancelledAsync(session, ct);
-        }
-        catch (Exception ex)
-        {
-            var context = session.IsBulkPublish
-                ? session.ResultContexts[Math.Clamp(session.CurrentBulkIndex, 0, session.ResultContexts.Count - 1)]
-                : session.ResultContext;
-
-            _logger.LogError(ex, "YouTube upload failed for {FileName}.", context.ResultFileName);
-            await SendUploadFailureAsync(session, ex, ct);
+            await _uploadJobRunner.RunAsync(
+                session,
+                RecordLastScheduledAt,
+                ResolveNextSlotForBulk,
+                ct);
         }
         finally
         {
@@ -1109,291 +1087,22 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         }
     }
 
-    private async Task RunSingleUploadJobAsync(PublishWizardSession session, CancellationToken ct)
+    private DateTimeOffset? ResolveNextSlotForBulk(PublishWizardSession session)
     {
-        string? thumbPath = null;
-        try
-        {
-            thumbPath = await _thumbnailGenerator.TryGenerateAsync(session.ResultContext.ResultFilePath, ct);
-
-            var request = new YouTubeUploadRequest(
-                session.ResultContext.ResultFilePath,
-                session.Title,
-                session.Description,
-                session.Tags,
-                Visibility: session.Visibility,
-                ScheduledPublishAtUtc: session.ScheduledPublishAtUtc,
-                ThumbnailFilePath: thumbPath,
-                CategoryId: _youTubeOptions.CurrentValue.DefaultCategoryId);
-
-            var result = await _youTubeUploader.UploadAsync(
-                request,
-                percent => UpdateUploadProgressAsync(session, percent, ct),
-                ct);
-
-            await _googleSheetsLogger.LogUploadAsync(
-                NormalizeChannelName(session.ChannelName),
-                session.ResultContext.SourceFileName,
-                session.Title,
-                result.VideoId,
-                result.YouTubeUrl,
-                result.Status.ToString().ToLowerInvariant(),
-                result.ScheduledAtUtc,
-                ct);
-
-            RecordLastScheduledAt(session, result);
-            await SendUploadSuccessAsync(session, result, ct);
-        }
-        finally
-        {
-            TryDeleteQuietly(thumbPath);
-        }
-    }
-
-    private async Task RunBulkUploadJobAsync(PublishWizardSession session, CancellationToken ct)
-    {
-        var tzId = _publishingOptions.CurrentValue.TimeZoneId;
-        var dailyPublishTime = _publishingOptions.CurrentValue.DailyPublishTime;
-        var baseScheduledAtUtc = session.ScheduledPublishAtUtc;
-
-        var results = new List<(PublishedResultContext Context, string Title, YouTubeUploadResult Result)>(session.ResultContexts.Count);
-
-        for (var index = 0; index < session.ResultContexts.Count; index++)
-        {
-            ct.ThrowIfCancellationRequested();
-
-            session.CurrentBulkIndex = index;
-            session.LastProgressPercent = -1;
-
-            var context = session.ResultContexts[index];
-            var title = session.TitleTemplate.Replace("{N}", context.PartNumber.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal);
-
-            DateTimeOffset? scheduledAtUtc;
-            if (baseScheduledAtUtc is null)
-            {
-                if (index == 0)
-                {
-                    scheduledAtUtc = null;
-                }
-                else
-                {
-                    var scheduleKey = (session.ChatId, NormalizeChannelName(session.ChannelName));
-                    _lastScheduledAtUtcByChatAndChannel.TryGetValue(scheduleKey, out var lastUtc);
-                    scheduledAtUtc = PublishingScheduleHelper.GetNextFreeSlotUtc(
-                        _timeProvider.GetUtcNow(),
-                        lastUtc == default ? null : lastUtc,
-                        tzId,
-                        dailyPublishTime);
-                }
-            }
-            else
-            {
-                scheduledAtUtc = PublishingScheduleHelper.AddLocalDays(baseScheduledAtUtc.Value, index, tzId);
-            }
-
-            session.Title = title;
-            session.ScheduledPublishAtUtc = scheduledAtUtc;
-
-            string? thumbPath = null;
-            try
-            {
-                thumbPath = await _thumbnailGenerator.TryGenerateAsync(context.ResultFilePath, ct);
-
-                var request = new YouTubeUploadRequest(
-                    context.ResultFilePath,
-                    title,
-                    session.Description,
-                    session.Tags,
-                    Visibility: session.Visibility,
-                    ScheduledPublishAtUtc: scheduledAtUtc,
-                    ThumbnailFilePath: thumbPath,
-                    CategoryId: _youTubeOptions.CurrentValue.DefaultCategoryId);
-
-                var result = await _youTubeUploader.UploadAsync(
-                    request,
-                    percent => UpdateUploadProgressAsync(session, percent, ct),
-                    ct);
-
-                await _googleSheetsLogger.LogUploadAsync(
-                    NormalizeChannelName(session.ChannelName),
-                    context.SourceFileName,
-                    title,
-                    result.VideoId,
-                    result.YouTubeUrl,
-                    result.Status.ToString().ToLowerInvariant(),
-                    result.ScheduledAtUtc,
-                    ct);
-
-                RecordLastScheduledAt(session, result);
-                results.Add((context, title, result));
-            }
-            finally
-            {
-                TryDeleteQuietly(thumbPath);
-            }
-        }
-
-        await SendBulkUploadSuccessAsync(session, results, ct);
+        var scheduleKey = (session.ChatId, NormalizeChannelName(session.ChannelName));
+        _lastScheduledAtUtcByChatAndChannel.TryGetValue(scheduleKey, out var lastUtc);
+        var opts = _publishingOptions.CurrentValue;
+        return PublishingScheduleHelper.GetNextFreeSlotUtc(
+            _timeProvider.GetUtcNow(),
+            lastUtc == default ? null : lastUtc,
+            opts.TimeZoneId,
+            opts.DailyPublishTime);
     }
 
     private void RecordLastScheduledAt(PublishWizardSession session, YouTubeUploadResult result)
     {
         var key = (session.ChatId, NormalizeChannelName(session.ChannelName));
         _lastScheduledAtUtcByChatAndChannel[key] = result.ScheduledAtUtc ?? _timeProvider.GetUtcNow();
-    }
-
-    private static void TryDeleteQuietly(string? path)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return;
-        }
-
-        try
-        {
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
-        }
-        catch
-        {
-            // Best effort cleanup.
-        }
-    }
-
-    private async Task UpdateUploadProgressAsync(PublishWizardSession session, int percent, CancellationToken ct)
-    {
-        if (session.ProgressMessageId is null || percent <= session.LastProgressPercent)
-        {
-            return;
-        }
-
-        session.LastProgressPercent = percent;
-        await _ui.EditMessageTextAsync(
-            session.ChatId,
-            session.ProgressMessageId.Value,
-            BuildProgressText(session, percent),
-            parseMode: ParseMode.Html,
-            ct: ct);
-    }
-
-    private static string BuildProgressText(PublishWizardSession session, int percent)
-    {
-        var label = session.ScheduledPublishAtUtc is null ? "Published" : "Scheduled";
-        var context = session.IsBulkPublish
-            ? session.ResultContexts[Math.Clamp(session.CurrentBulkIndex, 0, session.ResultContexts.Count - 1)]
-            : session.ResultContext;
-
-        var bulkLine = session.IsBulkPublish
-            ? $"📦 Part {context.PartNumber}/{session.ResultContexts.Count}\n\n"
-            : string.Empty;
-
-        return
-            $"📤 <b>{label} upload to YouTube...</b>\n\n" +
-            bulkLine +
-            $"<blockquote>📁 <code>{H(context.ResultFileName)}</code>\n" +
-            $"📝 <code>{H(session.Title)}</code></blockquote>\n\n" +
-            $"📊 <code>[{new string('#', percent / 10)}{new string('-', 10 - (percent / 10))}] {percent}%</code>";
-    }
-
-    private async Task SendUploadSuccessAsync(PublishWizardSession session, YouTubeUploadResult result, CancellationToken ct)
-    {
-        var text =
-            $"✅ <b>{(result.Status == YouTubeUploadStatus.Scheduled ? "Scheduled" : "Published")}</b>\n\n" +
-            $"<blockquote>📁 <code>{H(session.ResultContext.ResultFileName)}</code>\n" +
-            $"📝 <code>{H(session.Title)}</code>\n" +
-            $"🔗 <a href=\"{H(result.YouTubeUrl)}\">Open on YouTube</a></blockquote>";
-
-        if (session.ProgressMessageId is not null)
-        {
-            await _ui.EditMessageTextAsync(
-                session.ChatId,
-                session.ProgressMessageId.Value,
-                text,
-                parseMode: ParseMode.Html,
-                ct: ct);
-        }
-        else
-        {
-            await _ui.SendMessageAsync(session.ChatId, text, parseMode: ParseMode.Html, replyToMessageId: session.ReplyToMessageId, ct: ct);
-        }
-    }
-
-    private async Task SendBulkUploadSuccessAsync(
-        PublishWizardSession session,
-        IReadOnlyList<(PublishedResultContext Context, string Title, YouTubeUploadResult Result)> results,
-        CancellationToken ct)
-    {
-        var channelName = string.IsNullOrWhiteSpace(session.ChannelName) ? "Default" : session.ChannelName;
-        var visible = results.Take(10).ToArray();
-
-        var lines = visible.Select(r =>
-            $"• Part {r.Context.PartNumber}: <a href=\"{H(r.Result.YouTubeUrl)}\">{H(r.Title)}</a> ({H(r.Result.Status.ToString())})");
-
-        var suffix = results.Count > visible.Length ? $"\n… +{results.Count - visible.Length} more" : string.Empty;
-
-        var text =
-            "✅ <b>Bulk upload completed</b>\n\n" +
-            $"<blockquote>📺 <code>{H(channelName)}</code>\n" +
-            $"📁 <code>{H(session.ResultContext.SourceFileName)}</code>\n" +
-            $"📦 Segments: <b>{results.Count}</b></blockquote>\n\n" +
-            string.Join('\n', lines) +
-            suffix;
-
-        if (session.ProgressMessageId is not null)
-        {
-            await _ui.EditMessageTextAsync(
-                session.ChatId,
-                session.ProgressMessageId.Value,
-                text,
-                parseMode: ParseMode.Html,
-                ct: ct);
-        }
-        else
-        {
-            await _ui.SendMessageAsync(session.ChatId, text, parseMode: ParseMode.Html, replyToMessageId: session.ReplyToMessageId, ct: ct);
-        }
-    }
-
-    private async Task SendUploadFailureAsync(PublishWizardSession session, Exception ex, CancellationToken ct)
-    {
-        var text =
-            $"❌ <b>Upload failed</b>\n\n" +
-            $"<pre>{H(ex.Message)}</pre>";
-
-        if (session.ProgressMessageId is not null)
-        {
-            await _ui.EditMessageTextAsync(
-                session.ChatId,
-                session.ProgressMessageId.Value,
-                text,
-                parseMode: ParseMode.Html,
-                ct: ct);
-        }
-        else
-        {
-            await _ui.SendMessageAsync(session.ChatId, text, parseMode: ParseMode.Html, replyToMessageId: session.ReplyToMessageId, ct: ct);
-        }
-    }
-
-    private async Task SendUploadCancelledAsync(PublishWizardSession session, CancellationToken ct)
-    {
-        var text = "❌ <b>Upload cancelled</b>";
-
-        if (session.ProgressMessageId is not null)
-        {
-            await _ui.EditMessageTextAsync(
-                session.ChatId,
-                session.ProgressMessageId.Value,
-                text,
-                parseMode: ParseMode.Html,
-                ct: ct);
-        }
-        else
-        {
-            await _ui.SendMessageAsync(session.ChatId, text, parseMode: ParseMode.Html, replyToMessageId: session.ReplyToMessageId, ct: ct);
-        }
     }
 
     private async Task CancelPublishWizardAsync(long chatId, string message, CancellationToken ct)
