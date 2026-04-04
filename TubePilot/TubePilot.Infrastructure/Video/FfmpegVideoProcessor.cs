@@ -299,6 +299,7 @@ internal sealed class FfmpegVideoProcessor(
         string? qrOverlayPath = null;
         VideoProcessingRotateInfo? rotate = null;
         VideoProcessingDownscaleInfo? downscale = null;
+        var skippedReasons = new List<string>();
 
         foreach (var option in appliedOptions)
         {
@@ -316,6 +317,11 @@ internal sealed class FfmpegVideoProcessor(
                     speed = new VideoProcessingSpeedInfo(1d / slowdownFactor);
                     break;
                 case "speed_up":
+                    if (speed is not null)
+                    {
+                        skippedReasons.Add("⚡ Speed up — пропущено (конфлікт з slow down)");
+                        break;
+                    }
                     var speedupFactor = Random.Shared.NextDouble() * 0.02 + 1.03;
                     speed = new VideoProcessingSpeedInfo(speedupFactor);
                     break;
@@ -339,6 +345,10 @@ internal sealed class FfmpegVideoProcessor(
                     {
                         downscale = new VideoProcessingDownscaleInfo(1080);
                     }
+                    else
+                    {
+                        skippedReasons.Add($"📐 Даунскейл 1080p — пропущено (відео вже {mediaInfo.Height}p)");
+                    }
                     break;
             }
         }
@@ -351,7 +361,8 @@ internal sealed class FfmpegVideoProcessor(
             colorCorrection,
             qrOverlay,
             rotate,
-            downscale);
+            downscale,
+            skippedReasons);
 
         return new TransformPlan(summary, qrOverlayPath);
     }

@@ -27,6 +27,13 @@ internal static class TelegramSegmentResultMessageBuilder
 
         lines.AddRange(BuildAppliedOptionLines(context.ProcessingSummary));
 
+        if (context.ProcessingSummary.SkippedReasons.Count > 0)
+        {
+            lines.Add(string.Empty);
+            lines.Add("⏭ <b>Пропущено</b>:");
+            lines.AddRange(context.ProcessingSummary.SkippedReasons.Select(r => $"• {r}"));
+        }
+
         return string.Join('\n', lines);
     }
 
