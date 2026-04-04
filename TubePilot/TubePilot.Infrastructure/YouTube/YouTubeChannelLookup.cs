@@ -4,13 +4,6 @@ using Microsoft.Extensions.Logging;
 
 namespace TubePilot.Infrastructure.YouTube;
 
-internal sealed record YouTubeChannelInfo(string Id, string Title);
-
-internal interface IYouTubeChannelLookup
-{
-    Task<IReadOnlyList<YouTubeChannelInfo>> GetChannelsAsync(CancellationToken ct);
-}
-
 internal sealed class YouTubeChannelLookup(
     HttpClient httpClient,
     IYouTubeAccessTokenProvider accessTokenProvider,

@@ -6,5 +6,3 @@ internal interface IFfmpegRunner
 
     Task RunAsync(IReadOnlyList<string> arguments, double durationSeconds, Func<int, Task> progressCallback, CancellationToken ct = default);
 }
-
-internal sealed record FfmpegProbeResult(double DurationSeconds, int? Width, int? Height, bool HasVideo, bool HasAudio);
