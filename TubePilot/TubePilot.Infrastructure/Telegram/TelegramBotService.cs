@@ -30,10 +30,12 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     private readonly ITelegramUiClient _ui;
     private readonly IVideoProcessor _videoProcessor;
     private readonly IYouTubeChannelLookup _youTubeChannelLookup;
+    private readonly IChannelStore _channelStore;
     private readonly TelegramProcessingQueue _processingQueue;
     private readonly TelegramPublishQueue _publishQueue;
     private readonly TelegramResultCardPublisher _resultCardPublisher;
     private readonly TelegramUploadJobRunner _uploadJobRunner;
+    private readonly TelegramChannelManagementHandler _channelHandler;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<TelegramBotService> _logger;
     private readonly IOptionsMonitor<TelegramOptions> _telegramOptions;
@@ -74,21 +76,25 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         ITelegramUiClient uiClient,
         IVideoProcessor videoProcessor,
         IYouTubeChannelLookup youTubeChannelLookup,
+        IChannelStore channelStore,
         TelegramProcessingQueue processingQueue,
         TelegramPublishQueue publishQueue,
         NgrokTunnelManager tunnel,
         TelegramResultCardPublisher resultCardPublisher,
         TelegramUploadJobRunner uploadJobRunner,
+        TelegramChannelManagementHandler channelHandler,
         TimeProvider timeProvider,
         ILogger<TelegramBotService> logger)
     {
         _videoProcessor = videoProcessor;
         _youTubeChannelLookup = youTubeChannelLookup;
+        _channelStore = channelStore;
         _processingQueue = processingQueue;
         _publishQueue = publishQueue;
         _tunnel = tunnel;
         _resultCardPublisher = resultCardPublisher;
         _uploadJobRunner = uploadJobRunner;
+        _channelHandler = channelHandler;
         _timeProvider = timeProvider;
         _logger = logger;
         _telegramOptions = options;
@@ -233,12 +239,26 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
         if (text.Equals("/cancel", StringComparison.OrdinalIgnoreCase))
         {
+            _channelHandler.CancelWizard(chatId);
             if (_publishSessionsByChatId.ContainsKey(chatId))
             {
                 await CancelPublishWizardAsync(chatId, "❌ Публікацію скасовано.", ct);
             }
 
             return;
+        }
+
+        if (text.Equals("/channels", StringComparison.OrdinalIgnoreCase))
+        {
+            await _channelHandler.ShowMainMenuAsync(chatId, ct);
+            return;
+        }
+
+        // Channel management wizard has priority over publish wizard
+        if (_channelHandler.HasActiveWizard(chatId))
+        {
+            if (await _channelHandler.HandleTextAsync(chatId, text, ct))
+                return;
         }
 
         if (_publishSessionsByChatId.TryGetValue(chatId, out var session))
@@ -257,6 +277,13 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         if (!IsAuthorized(chatId))
         {
             await _ui.AnswerCallbackQueryAsync(query.Id, "🚫 Доступ заборонено.", showAlert: true, ct: ct);
+            return;
+        }
+
+        if (data.StartsWith(TelegramChannelManagementHandler.Prefix, StringComparison.Ordinal))
+        {
+            await _ui.AnswerCallbackQueryAsync(query.Id, ct: ct);
+            await _channelHandler.HandleCallbackAsync(chatId, data[TelegramChannelManagementHandler.Prefix.Length..], ct);
             return;
         }
 
@@ -510,6 +537,55 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             return;
         }
 
+        if (action.StartsWith("channel-store:", StringComparison.Ordinal))
+        {
+            if (session.Step != PublishWizardStep.WaitingForChannel)
+            {
+                await _ui.AnswerCallbackQueryAsync(query.Id, ct: ct);
+                return;
+            }
+
+            var parts = action["channel-store:".Length..].Split(':');
+            if (parts.Length != 2)
+            {
+                await _ui.AnswerCallbackQueryAsync(query.Id, ct: ct);
+                return;
+            }
+
+            var groupId = parts[0];
+            var channelId = parts[1];
+            var group = _channelStore.GetGroup(groupId);
+            var channel = group?.Channels.FirstOrDefault(c => c.Id == channelId);
+
+            if (group is null || channel is null)
+            {
+                await _ui.AnswerCallbackQueryAsync(query.Id, "❌ Канал не знайдено.", showAlert: true, ct: ct);
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(group.RefreshToken))
+            {
+                await _ui.AnswerCallbackQueryAsync(query.Id, "⚠️ Для цієї групи не налаштовано OAuth токен. Додай через /channels.", showAlert: true, ct: ct);
+                return;
+            }
+
+            // Check quota
+            _channelStore.ResetQuotaIfNeeded(groupId);
+            var remaining = _channelStore.GetRemainingQuota(groupId);
+            if (remaining < 1650)
+            {
+                await _ui.AnswerCallbackQueryAsync(query.Id, "🔴 Квота вичерпана для цієї групи. Спробуй завтра.", showAlert: true, ct: ct);
+                return;
+            }
+
+            session.ChannelName = channel.Name;
+            session.StoreChannelId = channelId;
+            session.StoreGroupId = groupId;
+            await _ui.AnswerCallbackQueryAsync(query.Id, ct: ct);
+            await SendTitlePromptAsync(session, ct);
+            return;
+        }
+
         if (action.StartsWith("channel:", StringComparison.Ordinal))
         {
             if (session.Step != PublishWizardStep.WaitingForChannel)
@@ -749,13 +825,37 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     {
         session.Step = PublishWizardStep.WaitingForChannel;
 
-        var channels = await ResolveChannelChoicesAsync(ct);
-        session.AvailableChannels = channels;
+        // Build channel list from channel store (primary) + fallback to old config/API
+        var rows = new List<InlineKeyboardButton[]>();
+        var channelEntries = new List<(string Label, string CallbackData)>();
 
-        var rows = new List<InlineKeyboardButton[]>(channels.Count + 1);
-        for (var index = 0; index < channels.Count; index++)
+        var groups = _channelStore.GetAllGroups();
+        foreach (var group in groups)
         {
-            rows.Add([InlineKeyboardButton.WithCallbackData($"📺 {channels[index]}", $"{PublishWizardPrefix}channel:{index}")]);
+            foreach (var ch in group.Channels)
+            {
+                var hasToken = !string.IsNullOrWhiteSpace(group.RefreshToken);
+                var icon = hasToken ? "📺" : "⚠️";
+                channelEntries.Add(($"{icon} {ch.Name} ({group.Name})", $"{PublishWizardPrefix}channel-store:{group.Id}:{ch.Id}"));
+            }
+        }
+
+        if (channelEntries.Count == 0)
+        {
+            // Fallback to old behavior
+            var legacyChannels = await ResolveChannelChoicesAsync(ct);
+            session.AvailableChannels = legacyChannels;
+            for (var index = 0; index < legacyChannels.Count; index++)
+            {
+                rows.Add([InlineKeyboardButton.WithCallbackData($"📺 {legacyChannels[index]}", $"{PublishWizardPrefix}channel:{index}")]);
+            }
+        }
+        else
+        {
+            foreach (var entry in channelEntries)
+            {
+                rows.Add([InlineKeyboardButton.WithCallbackData(entry.Label, entry.CallbackData)]);
+            }
         }
 
         rows.Add([InlineKeyboardButton.WithCallbackData("❌ Cancel", $"{PublishWizardPrefix}cancel")]);

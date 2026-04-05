@@ -32,7 +32,9 @@ internal sealed class YouTubeUploader(
 
         await progressCallback(0);
 
-        var accessToken = await accessTokenProvider.GetAccessTokenAsync(ct);
+        var accessToken = request.Credentials is not null
+            ? await accessTokenProvider.GetAccessTokenAsync(request.Credentials, ct)
+            : await accessTokenProvider.GetAccessTokenAsync(ct);
         var uploadUrl = await InitiateResumableUploadAsync(request, accessToken, ct);
         var videoId = await UploadVideoInChunksAsync(request, uploadUrl, accessToken, progressCallback, ct);
 

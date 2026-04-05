@@ -19,6 +19,12 @@ internal sealed class PublishWizardSession(IReadOnlyList<PublishedResultContext>
 
     public string ChannelName { get; set; } = string.Empty;
 
+    /// <summary>Channel store channel ID (from channels.json).</summary>
+    public string? StoreChannelId { get; set; }
+
+    /// <summary>Gmail group ID that owns this channel (for credentials + quota).</summary>
+    public string? StoreGroupId { get; set; }
+
     public string Title { get; set; } = string.Empty;
 
     public string TitleTemplate { get; set; } = string.Empty;

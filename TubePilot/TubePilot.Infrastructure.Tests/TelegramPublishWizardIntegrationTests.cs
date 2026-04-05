@@ -6,6 +6,7 @@ using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
 using TubePilot.Core.Contracts;
+using TubePilot.Core.Domain;
 using TubePilot.Infrastructure.Telegram;
 using TubePilot.Infrastructure.Telegram.Models;
 using TubePilot.Infrastructure.Telegram.Options;
@@ -326,9 +327,15 @@ public sealed class TelegramPublishWizardIntegrationTests
             youTubeUploader,
             sheetsLogger,
             new FakeThumbnailGenerator(),
+            new FakeChannelStore(),
             publishingOptions,
             youTubeOptions,
             NullLogger<TelegramUploadJobRunner>.Instance);
+
+        var channelHandler = new TelegramChannelManagementHandler(
+            uiClient,
+            new FakeChannelStore(),
+            NullLogger<TelegramChannelManagementHandler>.Instance);
 
         return new TelegramBotService(
             telegramOptions,
@@ -338,11 +345,13 @@ public sealed class TelegramPublishWizardIntegrationTests
             uiClient,
             new FakeVideoProcessor(),
             new FakeYouTubeChannelLookup(),
+            new FakeChannelStore(),
             processingQueue,
             publishQueue,
             new NgrokTunnelManager(new FakeHttpClientFactory(), NullLogger<NgrokTunnelManager>.Instance),
             resultCardPublisher,
             uploadJobRunner,
+            channelHandler,
             timeProvider,
             NullLogger<TelegramBotService>.Instance);
     }
@@ -633,5 +642,23 @@ public sealed class TelegramPublishWizardIntegrationTests
     private sealed class FakeHttpClientFactory : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new();
+    }
+
+    private sealed class FakeChannelStore : IChannelStore
+    {
+        public IReadOnlyList<GmailGroup> GetAllGroups() => [];
+        public GmailGroup? GetGroup(string groupId) => null;
+        public GmailGroup? GetGroupForChannel(string channelId) => null;
+        public YouTubeChannel? GetChannel(string channelId) => null;
+        public IReadOnlyList<YouTubeChannel> GetAllChannelsWithFolders() => [];
+        public void AddGroup(GmailGroup group) { }
+        public void UpdateGroup(GmailGroup group) { }
+        public void RemoveGroup(string groupId) { }
+        public void AddChannel(string groupId, YouTubeChannel channel) { }
+        public void UpdateChannel(string groupId, YouTubeChannel channel) { }
+        public void RemoveChannel(string groupId, string channelId) { }
+        public void RecordQuotaUsage(string groupId, double units) { }
+        public void ResetQuotaIfNeeded(string groupId) { }
+        public double GetRemainingQuota(string groupId) => 10000;
     }
 }

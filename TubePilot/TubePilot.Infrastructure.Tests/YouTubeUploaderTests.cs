@@ -199,6 +199,7 @@ public sealed class YouTubeUploaderRequestBuildingTests
 file sealed class StubAccessTokenProvider(string token) : IYouTubeAccessTokenProvider
 {
     public Task<string> GetAccessTokenAsync(CancellationToken ct) => Task.FromResult(token);
+    public Task<string> GetAccessTokenAsync(YouTubeUploadCredentials credentials, CancellationToken ct) => Task.FromResult(token);
 }
 
 file sealed class StaticOptionsMonitor<T>(T currentValue) : IOptionsMonitor<T>

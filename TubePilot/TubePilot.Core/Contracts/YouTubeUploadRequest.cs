@@ -8,4 +8,5 @@ public sealed record YouTubeUploadRequest(
     YouTubeVideoVisibility Visibility = YouTubeVideoVisibility.Public,
     DateTimeOffset? ScheduledPublishAtUtc = null,
     string? ThumbnailFilePath = null,
-    string? CategoryId = null);
+    string? CategoryId = null,
+    YouTubeUploadCredentials? Credentials = null);

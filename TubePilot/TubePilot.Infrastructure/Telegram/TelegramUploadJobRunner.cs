@@ -15,6 +15,7 @@ internal sealed class TelegramUploadJobRunner(
     IYouTubeUploader youTubeUploader,
     IGoogleSheetsLogger googleSheetsLogger,
     ITelegramResultThumbnailGenerator thumbnailGenerator,
+    IChannelStore channelStore,
     IOptionsMonitor<PublishingOptions> publishingOptions,
     IOptionsMonitor<YouTubeOptions> youTubeOptions,
     ILogger<TelegramUploadJobRunner> logger)
@@ -64,6 +65,7 @@ internal sealed class TelegramUploadJobRunner(
                 result.VideoId, result.YouTubeUrl, result.Status.ToString().ToLowerInvariant(), result.ScheduledAtUtc, ct);
 
             recordLastScheduledAt(session, result);
+            RecordQuota(session);
             await SendSuccessAsync(session, result, ct);
         }
         finally { TryDeleteQuietly(thumbPath); }
@@ -107,6 +109,7 @@ internal sealed class TelegramUploadJobRunner(
                     result.VideoId, result.YouTubeUrl, result.Status.ToString().ToLowerInvariant(), result.ScheduledAtUtc, ct);
 
                 recordLastScheduledAt(session, result);
+                RecordQuota(session);
                 results.Add((context, title, result));
             }
             finally { TryDeleteQuietly(thumbPath); }
@@ -116,9 +119,22 @@ internal sealed class TelegramUploadJobRunner(
     }
 
     private YouTubeUploadRequest BuildRequest(PublishWizardSession session, string filePath, string title, DateTimeOffset? scheduledAtUtc, string? thumbPath)
-        => new(filePath, title, session.Description, session.Tags,
+    {
+        YouTubeUploadCredentials? credentials = null;
+        if (session.StoreGroupId is not null)
+        {
+            var group = channelStore.GetGroup(session.StoreGroupId);
+            if (group is not null && !string.IsNullOrWhiteSpace(group.RefreshToken))
+            {
+                credentials = new YouTubeUploadCredentials(group.ClientId, group.ClientSecret, group.RefreshToken);
+            }
+        }
+
+        return new YouTubeUploadRequest(filePath, title, session.Description, session.Tags,
             Visibility: session.Visibility, ScheduledPublishAtUtc: scheduledAtUtc,
-            ThumbnailFilePath: thumbPath, CategoryId: youTubeOptions.CurrentValue.DefaultCategoryId);
+            ThumbnailFilePath: thumbPath, CategoryId: youTubeOptions.CurrentValue.DefaultCategoryId,
+            Credentials: credentials);
+    }
 
     internal async Task UpdateProgressAsync(PublishWizardSession session, int percent, CancellationToken ct)
     {
@@ -182,6 +198,13 @@ internal sealed class TelegramUploadJobRunner(
     }
 
     private static string NormalizeChannel(string? name) => string.IsNullOrWhiteSpace(name) ? "Default" : name.Trim();
+
+    private void RecordQuota(PublishWizardSession session)
+    {
+        if (session.StoreGroupId is not null)
+            channelStore.RecordQuotaUsage(session.StoreGroupId, 1650);
+    }
+
     private static void TryDeleteQuietly(string? path) { if (string.IsNullOrWhiteSpace(path)) return; try { if (File.Exists(path)) File.Delete(path); } catch { } }
     private static string H(string text) => WebUtility.HtmlEncode(text);
 }
