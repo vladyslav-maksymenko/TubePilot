@@ -52,7 +52,9 @@ internal sealed class KnownFilesStore(ILogger<KnownFilesStore> logger) : IKnownF
         try
         {
             var json = JsonSerializer.Serialize(_processedIds.OrderBy(x => x).ToArray());
-            File.WriteAllText(LocalStateFileName, json);
+            var tempPath = LocalStateFileName + ".tmp";
+            File.WriteAllText(tempPath, json);
+            File.Move(tempPath, LocalStateFileName, overwrite: true);
         }
         catch (Exception ex)
         {

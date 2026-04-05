@@ -1,5 +1,3 @@
-using Microsoft.AspNetCore.StaticFiles;
-using Microsoft.Extensions.FileProviders;
 using TubePilot.Infrastructure;
 using TubePilot.Infrastructure.Drive.Options;
 
@@ -22,19 +20,7 @@ public static class Program
         var processedDir = Path.GetFullPath(driveOptions.ProcessedDirectory);
         Directory.CreateDirectory(processedDir);
 
-        var contentTypeProvider = new FileExtensionContentTypeProvider();
-        contentTypeProvider.Mappings[".mp4"] = "video/mp4";
-        contentTypeProvider.Mappings[".webm"] = "video/webm";
-        contentTypeProvider.Mappings[".mkv"] = "video/x-matroska";
-        contentTypeProvider.Mappings[".avi"] = "video/x-msvideo";
-        contentTypeProvider.Mappings[".mov"] = "video/quicktime";
-
-        app.UseStaticFiles(new StaticFileOptions
-        {
-            FileProvider = new PhysicalFileProvider(processedDir),
-            RequestPath = "/play",
-            ContentTypeProvider = contentTypeProvider
-        });
+        ProcessedVideoEndpoints.MapRoutes(app, processedDir);
         
         app.Run();
     }

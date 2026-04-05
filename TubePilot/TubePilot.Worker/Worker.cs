@@ -8,56 +8,74 @@ public class Worker(
     ILogger<Worker> logger, 
     IDriveWatcher driveWatcher, 
     ITelegramBotService telegramBot,
+    IChannelStore channelStore,
     IOptionsMonitor<DriveOptions> optionsMonitor) : BackgroundService
 {
-    private bool _hasWarnedAboutMissingFolderId;
+    private bool _hasWarnedAboutNoFolders;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         while (!stoppingToken.IsCancellationRequested)
         {
             var options = optionsMonitor.CurrentValue;
-            var folderId = options.FolderId ?? string.Empty;
             var destinationDir = options.DownloadDirectory;
-            
-            if (string.IsNullOrEmpty(folderId))
+
+            // Collect all folder IDs to poll: from channel store + legacy config
+            var folderIds = new List<string>();
+
+            var storeChannels = channelStore.GetAllChannelsWithFolders();
+            foreach (var ch in storeChannels)
             {
-                if (!_hasWarnedAboutMissingFolderId)
+                if (!string.IsNullOrWhiteSpace(ch.DriveFolderId))
+                    folderIds.Add(ch.DriveFolderId);
+            }
+
+            // Legacy: single FolderId from config (backward compat)
+            var legacyFolderId = options.FolderId;
+            if (!string.IsNullOrWhiteSpace(legacyFolderId) && !folderIds.Contains(legacyFolderId))
+            {
+                folderIds.Add(legacyFolderId);
+            }
+
+            if (folderIds.Count == 0)
+            {
+                if (!_hasWarnedAboutNoFolders)
                 {
-                    logger.LogWarning("GoogleDrive:FolderId is missing in secrets.json! Provide the FolderId to enable polling.");
-                    _hasWarnedAboutMissingFolderId = true;
+                    logger.LogWarning("No Drive folders configured. Add channels via /channels or set GoogleDrive:FolderId in secrets.json.");
+                    _hasWarnedAboutNoFolders = true;
                 }
             }
             else
             {
-                // Скидаємо прапорець попередження, якщо юзер підкинув ID на льоту.
-                _hasWarnedAboutMissingFolderId = false;
-                
-                logger.LogInformation("Polling Google Drive for new videos...");
-                try 
+                _hasWarnedAboutNoFolders = false;
+
+                foreach (var folderId in folderIds)
                 {
-                    var newFiles = await driveWatcher.GetNewFilesAsync(folderId, stoppingToken);
-                    foreach(var file in newFiles)
+                    logger.LogInformation("Polling Google Drive folder {FolderId}...", folderId);
+                    try
                     {
-                        try
+                        var newFiles = await driveWatcher.GetNewFilesAsync(folderId, stoppingToken);
+                        foreach (var file in newFiles)
                         {
-                            var downloadedPath = await driveWatcher.DownloadAsync(file.Id, file.Name, destinationDir, stoppingToken);
-                            logger.LogInformation("Successfully processed {FileName} to {Path}", file.Name, downloadedPath);
-                            
-                            await telegramBot.NotifyNewVideoAsync(file, downloadedPath, stoppingToken);
-                        }
-                        catch (Exception innerEx)
-                        {
-                            logger.LogError(innerEx, "Failed to download file {FileName} ({FileId}). Skipping.", file.Name, file.Id);
+                            try
+                            {
+                                var downloadedPath = await driveWatcher.DownloadAsync(file.Id, file.Name, destinationDir, stoppingToken);
+                                logger.LogInformation("Successfully downloaded {FileName} to {Path}", file.Name, downloadedPath);
+                                await telegramBot.NotifyNewVideoAsync(file, downloadedPath, stoppingToken);
+                            }
+                            catch (Exception innerEx)
+                            {
+                                logger.LogError(innerEx, "Failed to download file {FileName} ({FileId}). Skipping.", file.Name, file.Id);
+                            }
                         }
                     }
-                }
-                catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
-                {
-                    logger.LogWarning(ex, "Transient error while polling Google Drive API. Will retry next cycle.");
+                    catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+                    {
+                        logger.LogWarning(ex, "Transient error polling Drive folder {FolderId}. Will retry next cycle.", folderId);
+                    }
                 }
             }
-            
+
             try
             {
                 await Task.Delay(TimeSpan.FromSeconds(options.PollingIntervalSeconds), stoppingToken);

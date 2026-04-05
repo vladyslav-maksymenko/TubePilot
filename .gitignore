@@ -5,6 +5,21 @@
 
 # dotenv files
 .env
+.env.*
+!.env.example
+
+# Secrets / credentials (keep local only)
+secrets.json
+TubePilot/TubePilot.Worker/secrets.json
+client_secret_*.json
+*googleusercontent.com*.json
+service_account*.json
+*service_account*.json
+yt-autoposter-dev-*.json
+
+# AI workflow
+.worktrees/
+.aiwf/
 
 # User-specific files
 *.rsuser
