@@ -5,5 +5,7 @@ namespace TubePilot.Infrastructure.YouTube;
 /// </summary>
 internal interface IOAuthCodeExchanger
 {
-    Task<string> ExchangeCodeAsync(string code, string clientId, string clientSecret, string redirectUri, CancellationToken ct);
+    Task<OAuthTokenResult> ExchangeCodeAsync(string code, string clientId, string clientSecret, string redirectUri, CancellationToken ct);
 }
+
+internal sealed record OAuthTokenResult(string RefreshToken, string AccessToken);

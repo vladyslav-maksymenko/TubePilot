@@ -12,6 +12,7 @@ internal sealed class TelegramChannelManagementHandler(
     ITelegramUiClient ui,
     IChannelStore channelStore,
     IOAuthCodeExchanger oAuthCodeExchanger,
+    IYouTubeChannelLookup youTubeChannelLookup,
     ILogger<TelegramChannelManagementHandler> logger)
 {
     internal const string Prefix = "ch:";
@@ -219,8 +220,39 @@ internal sealed class TelegramChannelManagementHandler(
         if (action.StartsWith("add-ch:", StringComparison.Ordinal))
         {
             var groupId = action["add-ch:".Length..];
-            _wizards[chatId] = new ChannelWizardSession { Step = WizardStep.EnterChannelName, GroupId = groupId };
-            await ui.SendMessageAsync(chatId, "✏️ Введи назву нового каналу:", ct: ct);
+            var group = channelStore.GetGroup(groupId);
+            if (group is null)
+            {
+                await ui.SendMessageAsync(chatId, "❌ Групу не знайдено.", ct: ct);
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(group.ClientId) || string.IsNullOrWhiteSpace(group.ClientSecret))
+            {
+                await ui.SendMessageAsync(chatId, "⚠️ Для цієї групи не налаштовано Client ID / Client Secret.", ct: ct);
+                return;
+            }
+
+            var oauthUrl = BuildOAuthUrl(group.ClientId);
+
+            _wizards[chatId] = new ChannelWizardSession
+            {
+                Step = WizardStep.AddChannelOAuthCode,
+                GroupId = groupId
+            };
+
+            await ui.SendMessageAsync(chatId,
+                "📺 <b>Додавання каналу</b>\n\n" +
+                "1️⃣ Відкрий посилання у своєму браузері\n" +
+                "2️⃣ Увійди в Gmail → обери канал → натисни «Дозволити»\n" +
+                "3️⃣ Google покаже код — скопіюй його і відправ сюди\n\n" +
+                "📋 <b>Скопіювати посилання:</b>\n" +
+                $"<code>{H(oauthUrl)}</code>",
+                parseMode: ParseMode.Html,
+                replyMarkup: new InlineKeyboardMarkup([
+                    [InlineKeyboardButton.WithUrl("🌐 Відкрити в браузері", oauthUrl)]
+                ]),
+                ct: ct);
             return;
         }
 
@@ -379,12 +411,16 @@ internal sealed class TelegramChannelManagementHandler(
 
         await ui.SendMessageAsync(chatId,
             $"🔑 <b>Підключення каналу «{H(channel.Name)}»</b>\n\n" +
-            "1️⃣ Скопіюй посилання нижче\n" +
-            "2️⃣ Відкрий його в Dolphin (потрібний профіль з проксі)\n" +
-            "3️⃣ Увійди в Gmail → обери канал → натисни «Дозволити»\n" +
-            "4️⃣ Google покаже код — скопіюй його і відправ сюди\n\n" +
+            "1️⃣ Відкрий посилання у своєму браузері\n" +
+            "2️⃣ Увійди в Gmail → обери канал → натисни «Дозволити»\n" +
+            "3️⃣ Google покаже код — скопіюй його і відправ сюди\n\n" +
+            "📋 <b>Скопіювати посилання:</b>\n" +
             $"<code>{H(oauthUrl)}</code>",
-            parseMode: ParseMode.Html, ct: ct);
+            parseMode: ParseMode.Html,
+            replyMarkup: new InlineKeyboardMarkup([
+                [InlineKeyboardButton.WithUrl("🌐 Відкрити в браузері", oauthUrl)]
+            ]),
+            ct: ct);
     }
 
     private static string BuildOAuthUrl(string clientId)
@@ -465,18 +501,40 @@ internal sealed class TelegramChannelManagementHandler(
 
                 try
                 {
-                    var refreshToken = await oAuthCodeExchanger.ExchangeCodeAsync(
+                    var result = await oAuthCodeExchanger.ExchangeCodeAsync(
                         code, group.ClientId, group.ClientSecret, OAuthRedirectUri, ct);
 
-                    channel.RefreshToken = refreshToken;
+                    channel.RefreshToken = result.RefreshToken;
+
+                    // Auto-fetch YouTube Channel ID and name
+                    if (!string.IsNullOrWhiteSpace(result.AccessToken))
+                    {
+                        try
+                        {
+                            var ytChannels = await youTubeChannelLookup.GetChannelsAsync(result.AccessToken, ct);
+                            if (ytChannels.Count > 0)
+                            {
+                                channel.YouTubeChannelId = ytChannels[0].Id;
+                                channel.Name = ytChannels[0].Title;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            logger.LogDebug(ex, "Failed to auto-fetch YouTube channel info, skipping.");
+                        }
+                    }
+
                     channelStore.UpdateChannel(group.Id, channel);
 
-                    logger.LogInformation("OAuth token saved for channel {ChannelName} in group {GroupName}",
-                        channel.Name, group.Name);
+                    logger.LogInformation("OAuth token saved for channel {ChannelName} (YT: {YouTubeId}) in group {GroupName}",
+                        channel.Name, channel.YouTubeChannelId ?? "unknown", group.Name);
 
                     _wizards.Remove(chatId);
+                    var ytIdLine = !string.IsNullOrWhiteSpace(channel.YouTubeChannelId)
+                        ? $"\n🆔 YouTube ID: <code>{H(channel.YouTubeChannelId)}</code>"
+                        : "";
                     await ui.SendMessageAsync(chatId,
-                        $"✅ Канал <b>{H(channel.Name)}</b> підключено!",
+                        $"✅ Канал <b>{H(channel.Name)}</b> підключено!{ytIdLine}",
                         parseMode: ParseMode.Html, ct: ct);
                     await ShowChannelEditAsync(chatId, group.Id, channel.Id, ct);
                 }
@@ -487,6 +545,134 @@ internal sealed class TelegramChannelManagementHandler(
                         $"❌ Помилка обміну коду: <code>{H(ex.Message)}</code>\n\nСпробуй ще раз — скопіюй новий код:",
                         parseMode: ParseMode.Html, ct: ct);
                 }
+                return true;
+            }
+
+            case WizardStep.AddChannelOAuthCode:
+            {
+                var code = text.Trim();
+                if (string.IsNullOrWhiteSpace(code))
+                {
+                    await ui.SendMessageAsync(chatId, "⚠️ Код не може бути порожнім. Спробуй ще раз:", ct: ct);
+                    return true;
+                }
+
+                var group = channelStore.GetGroup(wizard.GroupId!);
+                if (group is null)
+                {
+                    await ui.SendMessageAsync(chatId, "❌ Групу не знайдено.", ct: ct);
+                    _wizards.Remove(chatId);
+                    return true;
+                }
+
+                await ui.SendMessageAsync(chatId, "⏳ Обмінюю код на токен...", ct: ct);
+
+                try
+                {
+                    var result = await oAuthCodeExchanger.ExchangeCodeAsync(
+                        code, group.ClientId, group.ClientSecret, OAuthRedirectUri, ct);
+
+                    // Create channel with token
+                    var channel = new YouTubeChannel
+                    {
+                        Id = Guid.NewGuid().ToString("N")[..12],
+                        Name = "New Channel",
+                        RefreshToken = result.RefreshToken,
+                        CreatedAtUtc = DateTimeOffset.UtcNow
+                    };
+
+                    // Auto-fetch YouTube Channel ID and name
+                    if (!string.IsNullOrWhiteSpace(result.AccessToken))
+                    {
+                        try
+                        {
+                            var ytChannels = await youTubeChannelLookup.GetChannelsAsync(result.AccessToken, ct);
+                            if (ytChannels.Count > 0)
+                            {
+                                channel.YouTubeChannelId = ytChannels[0].Id;
+                                channel.Name = ytChannels[0].Title;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            logger.LogDebug(ex, "Failed to auto-fetch YouTube channel info.");
+                        }
+                    }
+
+                    channelStore.AddChannel(group.Id, channel);
+                    wizard.NewChannelId = channel.Id;
+                    wizard.ChannelId = channel.Id;
+
+                    logger.LogInformation("New channel added via OAuth: {ChannelName} (YT: {YouTubeId}) in group {GroupName}",
+                        channel.Name, channel.YouTubeChannelId ?? "unknown", group.Name);
+
+                    // Ask to confirm or change name
+                    wizard.Step = WizardStep.AddChannelConfirmName;
+                    var ytIdLine = !string.IsNullOrWhiteSpace(channel.YouTubeChannelId)
+                        ? $"\n🆔 <code>{H(channel.YouTubeChannelId)}</code>"
+                        : "";
+
+                    await ui.SendMessageAsync(chatId,
+                        $"✅ OAuth пройдено!\n\n" +
+                        $"📺 Канал: <b>{H(channel.Name)}</b>{ytIdLine}\n\n" +
+                        "Залишити цю назву чи ввести свій аліас?\n" +
+                        "Натисни /skip щоб залишити або введи нову назву:",
+                        parseMode: ParseMode.Html, ct: ct);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "OAuth code exchange failed during add-channel flow");
+                    await ui.SendMessageAsync(chatId,
+                        $"❌ Помилка обміну коду: <code>{H(ex.Message)}</code>\n\nСпробуй ще раз — скопіюй новий код:",
+                        parseMode: ParseMode.Html, ct: ct);
+                }
+                return true;
+            }
+
+            case WizardStep.AddChannelConfirmName:
+            {
+                var input = text.Trim();
+                var isSkip = input.Equals("/skip", StringComparison.OrdinalIgnoreCase);
+
+                if (!isSkip && !string.IsNullOrWhiteSpace(input))
+                {
+                    var ch = channelStore.GetChannel(wizard.NewChannelId!);
+                    if (ch is not null)
+                    {
+                        ch.Name = input;
+                        channelStore.UpdateChannel(wizard.GroupId!, ch);
+                    }
+                }
+
+                wizard.Step = WizardStep.AddChannelDriveFolder;
+                await ui.SendMessageAsync(chatId,
+                    "📁 Введи Google Drive Folder ID для цього каналу:\n\n" +
+                    "<i>/skip щоб додати пізніше</i>",
+                    parseMode: ParseMode.Html, ct: ct);
+                return true;
+            }
+
+            case WizardStep.AddChannelDriveFolder:
+            {
+                var input = text.Trim();
+                var isSkip = input.Equals("/skip", StringComparison.OrdinalIgnoreCase);
+
+                if (!isSkip && !string.IsNullOrWhiteSpace(input))
+                {
+                    var ch = channelStore.GetChannel(wizard.NewChannelId!);
+                    if (ch is not null)
+                    {
+                        ch.DriveFolderId = input;
+                        channelStore.UpdateChannel(wizard.GroupId!, ch);
+                    }
+                }
+
+                var channel = channelStore.GetChannel(wizard.NewChannelId!);
+                _wizards.Remove(chatId);
+                await ui.SendMessageAsync(chatId,
+                    $"✅ Канал <b>{H(channel?.Name ?? "")}</b> додано та підключено!",
+                    parseMode: ParseMode.Html, ct: ct);
+                await ShowGroupDetailAsync(chatId, wizard.GroupId!, ct);
                 return true;
             }
 
@@ -598,8 +784,11 @@ internal sealed class TelegramChannelManagementHandler(
         EnterGroupName,
         EnterClientId,
         EnterClientSecret,
-        EnterAuthorizationCode,
-        EnterChannelName,
+        EnterAuthorizationCode,   // OAuth for existing channel (re-connect)
+        AddChannelOAuthCode,      // OAuth for new channel (add flow)
+        AddChannelConfirmName,    // Confirm or change auto-detected name
+        AddChannelDriveFolder,    // Enter Drive Folder ID or /skip
+        EnterChannelName,         // Legacy: manual channel name entry
         ConfirmDeleteGroup,
         RenameGroup,
         RenameChannel,
@@ -615,5 +804,7 @@ internal sealed class TelegramChannelManagementHandler(
         public string? GroupName { get; set; }
         public string? ClientId { get; set; }
         public string? ClientSecret { get; set; }
+        // Used during add-channel flow to hold the newly created channel
+        public string? NewChannelId { get; set; }
     }
 }

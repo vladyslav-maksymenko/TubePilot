@@ -10,7 +10,7 @@ internal sealed class OAuthCodeExchanger(
 {
     private const string TokenEndpoint = "https://oauth2.googleapis.com/token";
 
-    public async Task<string> ExchangeCodeAsync(
+    public async Task<OAuthTokenResult> ExchangeCodeAsync(
         string code, string clientId, string clientSecret, string redirectUri, CancellationToken ct)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, TokenEndpoint);
@@ -35,15 +35,18 @@ internal sealed class OAuthCodeExchanger(
         }
 
         using var doc = JsonDocument.Parse(body);
-        if (doc.RootElement.TryGetProperty("refresh_token", out var rt) && rt.GetString() is { } refreshToken)
+        var refreshToken = doc.RootElement.TryGetProperty("refresh_token", out var rt) ? rt.GetString() : null;
+        var accessToken = doc.RootElement.TryGetProperty("access_token", out var at) ? at.GetString() : null;
+
+        if (string.IsNullOrWhiteSpace(refreshToken))
         {
-            logger.LogInformation("OAuth code exchanged successfully, refresh token obtained.");
-            return refreshToken;
+            logger.LogWarning("OAuth response missing refresh_token. Body: {Body}", body.Length > 500 ? body[..500] : body);
+            throw new InvalidOperationException(
+                "Google не повернув refresh_token. Переконайся що використовуєш access_type=offline і prompt=consent.");
         }
 
-        logger.LogWarning("OAuth response missing refresh_token. Body: {Body}", body.Length > 500 ? body[..500] : body);
-        throw new InvalidOperationException(
-            "Google не повернув refresh_token. Переконайся що використовуєш access_type=offline і prompt=consent.");
+        logger.LogInformation("OAuth code exchanged successfully, refresh token obtained.");
+        return new OAuthTokenResult(refreshToken, accessToken ?? "");
     }
 
     private static string ExtractError(string body)

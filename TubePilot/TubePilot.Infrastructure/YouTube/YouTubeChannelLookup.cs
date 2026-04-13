@@ -97,5 +97,49 @@ internal sealed class YouTubeChannelLookup(
             _mutex.Release();
         }
     }
+
+    public async Task<IReadOnlyList<YouTubeChannelInfo>> GetChannelsAsync(string accessToken, CancellationToken ct)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, ChannelsEndpoint);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+            using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+            var responseBody = await response.Content.ReadAsStringAsync(ct);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                logger.LogWarning("YouTube channels.list (per-token) failed: {StatusCode}. Body: {Body}",
+                    (int)response.StatusCode, responseBody.Length > 300 ? responseBody[..300] : responseBody);
+                return [];
+            }
+
+            using var doc = JsonDocument.Parse(responseBody);
+            if (!doc.RootElement.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array)
+                return [];
+
+            var channels = new List<YouTubeChannelInfo>();
+            foreach (var item in items.EnumerateArray())
+            {
+                var id = item.TryGetProperty("id", out var idElement) ? idElement.GetString() : null;
+                var title = item.TryGetProperty("snippet", out var snippet) &&
+                            snippet.TryGetProperty("title", out var titleElement)
+                    ? titleElement.GetString()
+                    : null;
+
+                if (!string.IsNullOrWhiteSpace(id) && !string.IsNullOrWhiteSpace(title))
+                    channels.Add(new YouTubeChannelInfo(id, title));
+            }
+
+            return channels;
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Failed to fetch YouTube channels via per-token API call.");
+            return [];
+        }
+    }
 }
 

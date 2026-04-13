@@ -336,6 +336,7 @@ public sealed class TelegramPublishWizardIntegrationTests
             uiClient,
             new FakeChannelStore(),
             new FakeOAuthCodeExchanger(),
+            new FakeYouTubeChannelLookup(),
             NullLogger<TelegramChannelManagementHandler>.Instance);
 
         return new TelegramBotService(
@@ -360,6 +361,8 @@ public sealed class TelegramPublishWizardIntegrationTests
     private sealed class FakeYouTubeChannelLookup : IYouTubeChannelLookup
     {
         public Task<IReadOnlyList<YouTubeChannelInfo>> GetChannelsAsync(CancellationToken ct)
+            => Task.FromResult<IReadOnlyList<YouTubeChannelInfo>>([]);
+        public Task<IReadOnlyList<YouTubeChannelInfo>> GetChannelsAsync(string accessToken, CancellationToken ct)
             => Task.FromResult<IReadOnlyList<YouTubeChannelInfo>>([]);
     }
 
@@ -676,7 +679,7 @@ public sealed class TelegramPublishWizardIntegrationTests
 
     private sealed class FakeOAuthCodeExchanger : IOAuthCodeExchanger
     {
-        public Task<string> ExchangeCodeAsync(string code, string clientId, string clientSecret, string redirectUri, CancellationToken ct)
-            => Task.FromResult("fake-refresh-token");
+        public Task<OAuthTokenResult> ExchangeCodeAsync(string code, string clientId, string clientSecret, string redirectUri, CancellationToken ct)
+            => Task.FromResult(new OAuthTokenResult("fake-refresh-token", "fake-access-token"));
     }
 }
