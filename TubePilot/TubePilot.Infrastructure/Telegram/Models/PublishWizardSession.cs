@@ -35,6 +35,9 @@ internal sealed class PublishWizardSession(IReadOnlyList<PublishedResultContext>
 
     public DateTimeOffset? ScheduledPublishAtUtc { get; set; }
 
+    /// <summary>Temporarily holds the picked local date (without time) during date+time picker flow.</summary>
+    public DateTime? PickedLocalDate { get; set; }
+
     public YouTubeVideoVisibility Visibility { get; set; } = YouTubeVideoVisibility.Public;
 
     public int? ReplyToMessageId { get; set; }

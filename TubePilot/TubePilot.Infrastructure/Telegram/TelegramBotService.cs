@@ -302,6 +302,12 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         // Channel management wizard has priority over publish wizard
         if (_channelHandler.HasActiveWizard(chatId))
         {
+            // Cancel publish wizard if channel wizard is active — they conflict
+            if (_publishSessionsByChatId.ContainsKey(chatId))
+            {
+                _publishSessionsByChatId.TryRemove(chatId, out _);
+            }
+
             if (await _channelHandler.HandleTextAsync(chatId, text, ct))
                 return;
         }
@@ -483,6 +489,11 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
                 var session = new PublishWizardSession([resultContext], chatId);
                 session.ReplyToMessageId = msgId;
+                if (_channelHandler.HasActiveWizard(chatId))
+                {
+                    _channelHandler.CancelWizard(chatId);
+                    await _ui.SendMessageAsync(chatId, "⚠️ Створення групи/каналу скасовано — починаємо публікацію.", ct: ct);
+                }
                 _publishSessionsByChatId[chatId] = session;
                 await _ui.AnswerCallbackQueryAsync(query.Id, ct: ct);
                 await SendChannelPromptAsync(session, ct);
@@ -521,6 +532,11 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
                 var bulkSession = new PublishWizardSession(orderedContexts, chatId);
                 bulkSession.ReplyToMessageId = msgId;
+                if (_channelHandler.HasActiveWizard(chatId))
+                {
+                    _channelHandler.CancelWizard(chatId);
+                    await _ui.SendMessageAsync(chatId, "⚠️ Створення групи/каналу скасовано — починаємо публікацію.", ct: ct);
+                }
                 _publishSessionsByChatId[chatId] = bulkSession;
                 await _ui.AnswerCallbackQueryAsync(query.Id, ct: ct);
                 await SendChannelPromptAsync(bulkSession, ct);
@@ -679,10 +695,10 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
             var label = session.Visibility switch
             {
-                YouTubeVideoVisibility.Public => "Public",
-                YouTubeVideoVisibility.Unlisted => "Unlisted",
-                YouTubeVideoVisibility.Private => "Private",
-                _ => "Public"
+                YouTubeVideoVisibility.Public => "Всі (Public)",
+                YouTubeVideoVisibility.Unlisted => "За посиланням (Unlisted)",
+                YouTubeVideoVisibility.Private => "Тільки я (Private)",
+                _ => "Всі (Public)"
             };
 
             await _ui.AnswerCallbackQueryAsync(query.Id, $"Visibility: {label}", ct: ct);
@@ -754,16 +770,69 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 return;
 
             case "schedule-pick":
-                if (session.Step != PublishWizardStep.WaitingForScheduleChoice)
+                if (session.Step != PublishWizardStep.WaitingForScheduleChoice &&
+                    session.Step != PublishWizardStep.WaitingForPickTime)
                 {
                     await _ui.AnswerCallbackQueryAsync(query.Id, ct: ct);
                     return;
                 }
 
                 await _ui.AnswerCallbackQueryAsync(query.Id, ct: ct);
-                await SendCustomDatePromptAsync(session, ct);
+                await SendPickDatePromptAsync(session, ct);
                 return;
+        }
 
+        if (action.StartsWith("pick-date:", StringComparison.Ordinal))
+        {
+            if (session.Step != PublishWizardStep.WaitingForPickDate)
+            {
+                await _ui.AnswerCallbackQueryAsync(query.Id, ct: ct);
+                return;
+            }
+
+            var daysOffset = int.Parse(action["pick-date:".Length..]);
+            var tz = PublishingScheduleHelper.ResolveTimeZone(_publishingOptions.CurrentValue.TimeZoneId);
+            var nowLocal = TimeZoneInfo.ConvertTime(_timeProvider.GetUtcNow(), tz);
+            session.PickedLocalDate = nowLocal.Date.AddDays(daysOffset);
+
+            await _ui.AnswerCallbackQueryAsync(query.Id, ct: ct);
+            await SendPickTimePromptAsync(session, ct);
+            return;
+        }
+
+        if (action.StartsWith("pick-time:", StringComparison.Ordinal))
+        {
+            if (session.Step != PublishWizardStep.WaitingForPickTime)
+            {
+                await _ui.AnswerCallbackQueryAsync(query.Id, ct: ct);
+                return;
+            }
+
+            var timeParts = action["pick-time:".Length..].Split(':');
+            if (timeParts.Length == 2 && int.TryParse(timeParts[0], out var hour) && int.TryParse(timeParts[1], out var minute))
+            {
+                var tz = PublishingScheduleHelper.ResolveTimeZone(_publishingOptions.CurrentValue.TimeZoneId);
+                var localDateTime = session.PickedLocalDate!.Value.Add(new TimeSpan(hour, minute, 0));
+                var localUnspecified = DateTime.SpecifyKind(localDateTime, DateTimeKind.Unspecified);
+                var utc = TimeZoneInfo.ConvertTimeToUtc(localUnspecified, tz);
+                session.ScheduledPublishAtUtc = new DateTimeOffset(utc, TimeSpan.Zero);
+
+                if (session.ScheduledPublishAtUtc <= _timeProvider.GetUtcNow().AddMinutes(2))
+                {
+                    await _ui.AnswerCallbackQueryAsync(query.Id, "⚠️ Цей час вже минув. Обери інший.", showAlert: true, ct: ct);
+                    await SendPickTimePromptAsync(session, ct);
+                    return;
+                }
+
+                session.Visibility = YouTubeVideoVisibility.Public;
+                await _ui.AnswerCallbackQueryAsync(query.Id, ct: ct);
+                await SendConfirmPromptAsync(session, ct);
+            }
+            return;
+        }
+
+        switch (action)
+        {
             case "confirm":
                 if (session.Step != PublishWizardStep.Confirm)
                 {
@@ -848,6 +917,64 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 session.Visibility = YouTubeVideoVisibility.Public;
                 await SendConfirmPromptAsync(session, ct);
                 return;
+
+            case PublishWizardStep.WaitingForPickDate:
+            {
+                // Manual date input: DD.MM or DD.MM.YYYY
+                var input = text.Trim();
+                var tz = PublishingScheduleHelper.ResolveTimeZone(_publishingOptions.CurrentValue.TimeZoneId);
+                var nowLocal = TimeZoneInfo.ConvertTime(_timeProvider.GetUtcNow(), tz);
+
+                DateTime parsedDate;
+                if (DateTime.TryParseExact(input, ["dd.MM", "dd.MM.yyyy", "d.M", "d.M.yyyy"],
+                        System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out parsedDate))
+                {
+                    if (parsedDate.Year == 1) // dd.MM without year
+                        parsedDate = new DateTime(nowLocal.Year, parsedDate.Month, parsedDate.Day);
+
+                    if (parsedDate.Date < nowLocal.Date)
+                    {
+                        await _ui.SendMessageAsync(session.ChatId, "⚠️ Дата в минулому. Введи майбутню дату або обери кнопкою:", replyToMessageId: session.ReplyToMessageId, ct: ct);
+                        return;
+                    }
+
+                    session.PickedLocalDate = parsedDate.Date;
+                    await SendPickTimePromptAsync(session, ct);
+                }
+                else
+                {
+                    await _ui.SendMessageAsync(session.ChatId, "⚠️ Невірний формат. Введи дату як ДД.ММ або ДД.ММ.РРРР, або обери кнопкою:", replyToMessageId: session.ReplyToMessageId, ct: ct);
+                }
+                return;
+            }
+
+            case PublishWizardStep.WaitingForPickTime:
+            {
+                // Manual time input: HH:mm
+                var input = text.Trim();
+                if (TimeSpan.TryParseExact(input, ["h\\:mm", "hh\\:mm"], System.Globalization.CultureInfo.InvariantCulture, out var time))
+                {
+                    var tz = PublishingScheduleHelper.ResolveTimeZone(_publishingOptions.CurrentValue.TimeZoneId);
+                    var localDateTime = session.PickedLocalDate!.Value.Add(time);
+                    var localUnspecified = DateTime.SpecifyKind(localDateTime, DateTimeKind.Unspecified);
+                    var utc = TimeZoneInfo.ConvertTimeToUtc(localUnspecified, tz);
+                    session.ScheduledPublishAtUtc = new DateTimeOffset(utc, TimeSpan.Zero);
+
+                    if (session.ScheduledPublishAtUtc <= _timeProvider.GetUtcNow().AddMinutes(2))
+                    {
+                        await _ui.SendMessageAsync(session.ChatId, "⚠️ Цей час вже минув. Введи інший або обери кнопкою:", replyToMessageId: session.ReplyToMessageId, ct: ct);
+                        return;
+                    }
+
+                    session.Visibility = YouTubeVideoVisibility.Public;
+                    await SendConfirmPromptAsync(session, ct);
+                }
+                else
+                {
+                    await _ui.SendMessageAsync(session.ChatId, "⚠️ Невірний формат. Введи час як ГГ:ХХ (наприклад 14:30), або обери кнопкою:", replyToMessageId: session.ReplyToMessageId, ct: ct);
+                }
+                return;
+            }
 
             case PublishWizardStep.WaitingForVisibility:
                 await _ui.SendMessageAsync(session.ChatId, "Обери visibility кнопкою нижче або /cancel.", replyToMessageId: session.ReplyToMessageId, ct: ct);
@@ -1011,16 +1138,13 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
         await _ui.SendMessageAsync(
             session.ChatId,
-            "🌐 Обери visibility відео на YouTube:",
+            "🌐 Хто зможе бачити відео?",
             replyToMessageId: session.ReplyToMessageId,
             replyMarkup: new InlineKeyboardMarkup(
             [
-                [
-                    InlineKeyboardButton.WithCallbackData("🌍 Public (default)", $"{PublishWizardPrefix}visibility:public"),
-                    InlineKeyboardButton.WithCallbackData("🔗 Unlisted", $"{PublishWizardPrefix}visibility:unlisted")
-                ],
-                [InlineKeyboardButton.WithCallbackData("🔒 Private", $"{PublishWizardPrefix}visibility:private")],
-                [InlineKeyboardButton.WithCallbackData("⏩ Skip (Public)", $"{PublishWizardPrefix}visibility:skip")],
+                [InlineKeyboardButton.WithCallbackData("🌍 Всі (Public)", $"{PublishWizardPrefix}visibility:public")],
+                [InlineKeyboardButton.WithCallbackData("🔗 За посиланням (Unlisted)", $"{PublishWizardPrefix}visibility:unlisted")],
+                [InlineKeyboardButton.WithCallbackData("🔒 Тільки я (Private)", $"{PublishWizardPrefix}visibility:private")],
                 [InlineKeyboardButton.WithCallbackData("❌ Cancel", $"{PublishWizardPrefix}cancel")]
             ]),
             ct: ct);
@@ -1034,6 +1158,63 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             session.ChatId,
             $"Введи дату і час у форматі: YYYY-MM-DD HH:mm (наприклад 2026-03-26 21:11)\nTimezone: {timeZoneId}",
             replyToMessageId: session.ReplyToMessageId,
+            ct: ct);
+    }
+
+    private async Task SendPickDatePromptAsync(PublishWizardSession session, CancellationToken ct)
+    {
+        session.Step = PublishWizardStep.WaitingForPickDate;
+        var tz = PublishingScheduleHelper.ResolveTimeZone(_publishingOptions.CurrentValue.TimeZoneId);
+        var nowLocal = TimeZoneInfo.ConvertTime(_timeProvider.GetUtcNow(), tz);
+
+        var rows = new List<InlineKeyboardButton[]>();
+        for (var i = 0; i < 7; i++)
+        {
+            var date = nowLocal.Date.AddDays(i);
+            var label = i switch
+            {
+                0 => $"📅 Сьогодні ({date:dd.MM})",
+                1 => $"📅 Завтра ({date:dd.MM})",
+                _ => $"📅 {date:dd.MM} ({date:ddd})"
+            };
+            rows.Add([InlineKeyboardButton.WithCallbackData(label, $"{PublishWizardPrefix}pick-date:{i}")]);
+        }
+        rows.Add([InlineKeyboardButton.WithCallbackData("❌ Cancel", $"{PublishWizardPrefix}cancel")]);
+
+        await _ui.SendMessageAsync(
+            session.ChatId,
+            "📅 Обери дату публікації або введи вручну (ДД.ММ):",
+            replyToMessageId: session.ReplyToMessageId,
+            replyMarkup: new InlineKeyboardMarkup(rows),
+            ct: ct);
+    }
+
+    private async Task SendPickTimePromptAsync(PublishWizardSession session, CancellationToken ct)
+    {
+        session.Step = PublishWizardStep.WaitingForPickTime;
+        var date = session.PickedLocalDate!.Value;
+
+        var times = new[] { "06:00", "08:00", "10:00", "12:00", "14:00", "16:00", "18:00", "20:00", "22:00" };
+        var rows = new List<InlineKeyboardButton[]>();
+
+        for (var i = 0; i < times.Length; i += 3)
+        {
+            var row = new List<InlineKeyboardButton>();
+            for (var j = i; j < Math.Min(i + 3, times.Length); j++)
+            {
+                row.Add(InlineKeyboardButton.WithCallbackData($"🕐 {times[j]}", $"{PublishWizardPrefix}pick-time:{times[j]}"));
+            }
+            rows.Add(row.ToArray());
+        }
+        rows.Add([InlineKeyboardButton.WithCallbackData("◀️ Назад до дати", $"{PublishWizardPrefix}schedule-pick")]);
+        rows.Add([InlineKeyboardButton.WithCallbackData("❌ Cancel", $"{PublishWizardPrefix}cancel")]);
+
+        await _ui.SendMessageAsync(
+            session.ChatId,
+            $"🕐 Обери час публікації на <b>{date:dd.MM.yyyy}</b> або введи вручну (ГГ:ХХ):",
+            parseMode: ParseMode.Html,
+            replyToMessageId: session.ReplyToMessageId,
+            replyMarkup: new InlineKeyboardMarkup(rows),
             ct: ct);
     }
 

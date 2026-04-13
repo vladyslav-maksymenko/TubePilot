@@ -144,14 +144,14 @@ public sealed class TelegramPublishWizardIntegrationTests
         await service.HandleUpdateAsync(botClient, CreateMessageUpdate(chatId, "/skip"), CancellationToken.None);
         await service.HandleUpdateAsync(botClient, CreateMessageUpdate(chatId, "/skip"), CancellationToken.None);
 
+        // Old text-based custom date flow still works as fallback
         await service.HandleUpdateAsync(botClient, CreateCallbackUpdate(chatId, msgId: 500, data: "pw:schedule-pick"), CancellationToken.None);
 
-        var before = ui.SendMessageCalls.Count;
-        await service.HandleUpdateAsync(botClient, CreateMessageUpdate(chatId, "not-a-date"), CancellationToken.None);
-        Assert.True(ui.SendMessageCalls.Count > before);
-        Assert.False(string.IsNullOrWhiteSpace(ui.SendMessageCalls[^1].Text));
+        // Pick today (offset 0) then a time that's already past
+        await service.HandleUpdateAsync(botClient, CreateCallbackUpdate(chatId, msgId: 500, data: "pw:pick-date:0"), CancellationToken.None);
+        // 06:00 on 2026-01-15 in Europe/Kiev = 04:00 UTC, which is before nowUtc (07:00 UTC)
+        await service.HandleUpdateAsync(botClient, CreateCallbackUpdate(chatId, msgId: 500, data: "pw:pick-time:06:00"), CancellationToken.None);
 
-        await service.HandleUpdateAsync(botClient, CreateMessageUpdate(chatId, "2000-01-01 00:00"), CancellationToken.None);
         Assert.Empty(uploader.Requests);
     }
 
@@ -176,7 +176,8 @@ public sealed class TelegramPublishWizardIntegrationTests
         await service.HandleUpdateAsync(botClient, CreateMessageUpdate(chatId, "/skip"), CancellationToken.None);
         await service.HandleUpdateAsync(botClient, CreateMessageUpdate(chatId, "/skip"), CancellationToken.None);
         await service.HandleUpdateAsync(botClient, CreateCallbackUpdate(chatId, msgId: 500, data: "pw:schedule-pick"), CancellationToken.None);
-        await service.HandleUpdateAsync(botClient, CreateMessageUpdate(chatId, "2026-01-20 10:00"), CancellationToken.None);
+        await service.HandleUpdateAsync(botClient, CreateCallbackUpdate(chatId, msgId: 500, data: "pw:pick-date:5"), CancellationToken.None);
+        await service.HandleUpdateAsync(botClient, CreateCallbackUpdate(chatId, msgId: 500, data: "pw:pick-time:10:00"), CancellationToken.None);
         await service.HandleUpdateAsync(botClient, CreateCallbackUpdate(chatId, msgId: 500, data: "pw:confirm"), CancellationToken.None);
         await service.DebugWaitForActivePublishJobAsync(chatId);
 
@@ -239,7 +240,8 @@ public sealed class TelegramPublishWizardIntegrationTests
         await service.HandleUpdateAsync(botClient, CreateMessageUpdate(chatId, "/skip"), CancellationToken.None);
         await service.HandleUpdateAsync(botClient, CreateMessageUpdate(chatId, "/skip"), CancellationToken.None);
         await service.HandleUpdateAsync(botClient, CreateCallbackUpdate(chatId, msgId: 500, data: "pw:schedule-pick"), CancellationToken.None);
-        await service.HandleUpdateAsync(botClient, CreateMessageUpdate(chatId, "2026-01-20 10:00"), CancellationToken.None);
+        await service.HandleUpdateAsync(botClient, CreateCallbackUpdate(chatId, msgId: 500, data: "pw:pick-date:5"), CancellationToken.None);
+        await service.HandleUpdateAsync(botClient, CreateCallbackUpdate(chatId, msgId: 500, data: "pw:pick-time:10:00"), CancellationToken.None);
         await service.HandleUpdateAsync(botClient, CreateCallbackUpdate(chatId, msgId: 500, data: "pw:confirm"), CancellationToken.None);
         await service.DebugWaitForActivePublishJobAsync(chatId);
 
