@@ -104,6 +104,16 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         _ui = uiClient;
     }
 
+    private static readonly ReplyKeyboardMarkup PersistentKeyboard = new(
+    [
+        [new KeyboardButton("📋 Мої групи каналів"), new KeyboardButton("➕ Додати групу")],
+        [new KeyboardButton("❓ Допомога")]
+    ])
+    {
+        ResizeKeyboard = true,
+        IsPersistent = true
+    };
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _serviceStoppingToken = stoppingToken;
@@ -114,6 +124,14 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
         _botClient.StartReceiving(HandleUpdateAsync, HandleErrorAsync, receiverOptions, stoppingToken);
         _tunnelTask = _tunnel.StartAsync(5000, _telegramOptions.CurrentValue.NgrokAuthToken ?? "", stoppingToken);
+
+        await _botClient.SetMyCommands(
+        [
+            new BotCommand { Command = "start", Description = "Авторизація бота" },
+            new BotCommand { Command = "channels", Description = "Керування групами та каналами" },
+            new BotCommand { Command = "help", Description = "Список команд та пояснення" },
+            new BotCommand { Command = "cancel", Description = "Скасувати поточну дію" },
+        ], cancellationToken: stoppingToken);
 
         var me = await _botClient.GetMe(stoppingToken);
         _logger.LogInformation("[Telegram] Bot @{Username} is listening for interactions...", me.Username);
@@ -220,9 +238,10 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
             var startText =
                 "✅ <b>Авторизація успішна!</b>\n\n" +
-                "Тепер я буду надсилати сюди інтерфейс для обробки кожного нового відео, яке потрапляє на Google Drive 🚀";
+                "Тепер я буду надсилати сюди інтерфейс для обробки кожного нового відео, яке потрапляє на Google Drive 🚀\n\n" +
+                "Використовуй кнопки нижче або /help для списку команд.";
 
-            await _ui.SendMessageAsync(chatId, startText, parseMode: ParseMode.Html, ct: ct);
+            await _ui.SendMessageWithReplyKeyboardAsync(chatId, startText, PersistentKeyboard, parseMode: ParseMode.Html, ct: ct);
             _logger.LogInformation("Successfully linked bot to user ChatId: {ChatId}", chatId);
             return;
         }
@@ -248,9 +267,21 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             return;
         }
 
-        if (text.Equals("/channels", StringComparison.OrdinalIgnoreCase))
+        if (text.Equals("/channels", StringComparison.OrdinalIgnoreCase) || text == "📋 Мої групи каналів")
         {
             await _channelHandler.ShowMainMenuAsync(chatId, ct);
+            return;
+        }
+
+        if (text == "➕ Додати групу")
+        {
+            await _channelHandler.HandleCallbackAsync(chatId, "add-group", ct);
+            return;
+        }
+
+        if (text.Equals("/help", StringComparison.OrdinalIgnoreCase) || text == "❓ Допомога")
+        {
+            await SendHelpAsync(chatId, ct);
             return;
         }
 
@@ -563,9 +594,9 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(group.RefreshToken))
+            if (string.IsNullOrWhiteSpace(channel.RefreshToken))
             {
-                await _ui.AnswerCallbackQueryAsync(query.Id, "⚠️ Для цієї групи не налаштовано OAuth токен. Додай через /channels.", showAlert: true, ct: ct);
+                await _ui.AnswerCallbackQueryAsync(query.Id, "⚠️ Для цього каналу не налаштовано OAuth токен. Додай через /channels.", showAlert: true, ct: ct);
                 return;
             }
 
@@ -834,7 +865,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
         {
             foreach (var ch in group.Channels)
             {
-                var hasToken = !string.IsNullOrWhiteSpace(group.RefreshToken);
+                var hasToken = !string.IsNullOrWhiteSpace(ch.RefreshToken);
                 var icon = hasToken ? "📺" : "⚠️";
                 channelEntries.Add(($"{icon} {ch.Name} ({group.Name})", $"{PublishWizardPrefix}channel-store:{group.Id}:{ch.Id}"));
             }
@@ -1295,6 +1326,39 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
     {
         var baseUrl = (_tunnel.PublicUrl ?? _telegramOptions.CurrentValue.BaseUrl)?.TrimEnd('/') ?? string.Empty;
         return TelegramResultLinks.BuildPublicResultUrl(baseUrl, fileName);
+    }
+
+    private async Task SendHelpAsync(long chatId, CancellationToken ct)
+    {
+        const string helpText =
+            "📖 <b>Команди та можливості</b>\n\n" +
+
+            "<b>🔧 Керування каналами</b>\n" +
+            "/channels — список груп і каналів\n" +
+            "📋 <i>Мої групи каналів</i> — те саме через кнопку\n" +
+            "➕ <i>Додати групу</i> — створити нову групу (Gmail + GCP credentials)\n\n" +
+
+            "<b>📺 Як підключити канал</b>\n" +
+            "1. Створи групу → введи Client ID та Client Secret з GCP\n" +
+            "2. Додай канал у групу\n" +
+            "3. Натисни 🔑 <i>Підключити OAuth</i> на каналі\n" +
+            "4. Скопіюй URL → відкрий в Dolphin → пройди OAuth\n" +
+            "5. Скопіюй код від Google → відправ боту\n\n" +
+
+            "<b>🎬 Обробка відео</b>\n" +
+            "Бот автоматично знаходить нові відео на Google Drive.\n" +
+            "Обери фільтри (дзеркало, швидкість, колір тощо) → натисни <i>Почати обробку</i>.\n\n" +
+
+            "<b>📤 Публікація на YouTube</b>\n" +
+            "Після обробки натисни <i>Publish to YouTube</i> → обери канал → " +
+            "введи назву, опис, теги → обери час → підтверди.\n\n" +
+
+            "<b>⚙️ Інші команди</b>\n" +
+            "/start — авторизація бота\n" +
+            "/cancel — скасувати поточну дію\n" +
+            "/help — ця довідка";
+
+        await _ui.SendMessageAsync(chatId, helpText, parseMode: ParseMode.Html, ct: ct);
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)

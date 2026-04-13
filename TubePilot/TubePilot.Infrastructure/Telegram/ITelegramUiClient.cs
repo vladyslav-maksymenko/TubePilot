@@ -13,6 +13,13 @@ internal interface ITelegramUiClient
         InlineKeyboardMarkup? replyMarkup = null,
         CancellationToken ct = default);
 
+    Task<int> SendMessageWithReplyKeyboardAsync(
+        long chatId,
+        string text,
+        ReplyKeyboardMarkup replyKeyboard,
+        ParseMode? parseMode = null,
+        CancellationToken ct = default);
+
     Task EditMessageTextAsync(
         long chatId,
         int messageId,

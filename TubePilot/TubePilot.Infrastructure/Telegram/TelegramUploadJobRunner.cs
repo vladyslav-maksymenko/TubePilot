@@ -121,12 +121,13 @@ internal sealed class TelegramUploadJobRunner(
     private YouTubeUploadRequest BuildRequest(PublishWizardSession session, string filePath, string title, DateTimeOffset? scheduledAtUtc, string? thumbPath)
     {
         YouTubeUploadCredentials? credentials = null;
-        if (session.StoreGroupId is not null)
+        if (session.StoreGroupId is not null && session.StoreChannelId is not null)
         {
             var group = channelStore.GetGroup(session.StoreGroupId);
-            if (group is not null && !string.IsNullOrWhiteSpace(group.RefreshToken))
+            var channel = group?.Channels.FirstOrDefault(c => c.Id == session.StoreChannelId);
+            if (group is not null && channel is not null && !string.IsNullOrWhiteSpace(channel.RefreshToken))
             {
-                credentials = new YouTubeUploadCredentials(group.ClientId, group.ClientSecret, group.RefreshToken);
+                credentials = new YouTubeUploadCredentials(group.ClientId, group.ClientSecret, channel.RefreshToken);
             }
         }
 

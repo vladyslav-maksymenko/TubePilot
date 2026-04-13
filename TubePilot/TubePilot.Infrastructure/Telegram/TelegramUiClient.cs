@@ -37,6 +37,20 @@ internal sealed class TelegramUiClient(ITelegramBotClient botClient) : ITelegram
         return message.MessageId;
     }
 
+    public async Task<int> SendMessageWithReplyKeyboardAsync(
+        long chatId,
+        string text,
+        ReplyKeyboardMarkup replyKeyboard,
+        ParseMode? parseMode = null,
+        CancellationToken ct = default)
+    {
+        var message = parseMode is null
+            ? await botClient.SendMessage(chatId, text, replyMarkup: replyKeyboard, cancellationToken: ct)
+            : await botClient.SendMessage(chatId, text, parseMode: parseMode.Value, replyMarkup: replyKeyboard, cancellationToken: ct);
+
+        return message.MessageId;
+    }
+
     public async Task EditMessageTextAsync(
         long chatId,
         int messageId,

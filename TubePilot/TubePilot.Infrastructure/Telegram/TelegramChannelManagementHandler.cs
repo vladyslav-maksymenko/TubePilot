@@ -11,9 +11,13 @@ namespace TubePilot.Infrastructure.Telegram;
 internal sealed class TelegramChannelManagementHandler(
     ITelegramUiClient ui,
     IChannelStore channelStore,
+    IOAuthCodeExchanger oAuthCodeExchanger,
     ILogger<TelegramChannelManagementHandler> logger)
 {
     internal const string Prefix = "ch:";
+
+    private const string YouTubeUploadScope = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly";
+    private const string OAuthRedirectUri = "urn:ietf:wg:oauth:2.0:oob";
 
     // Wizard sessions per chat
     private readonly Dictionary<long, ChannelWizardSession> _wizards = [];
@@ -43,14 +47,13 @@ internal sealed class TelegramChannelManagementHandler(
         {
             channelStore.ResetQuotaIfNeeded(g.Id);
             var remaining = channelStore.GetRemainingQuota(g.Id);
-            var uploadsLeft = (int)(remaining / 1650);
             var uploadsUsed = (int)(g.QuotaUsedToday / 1650);
             var status = remaining >= 1650 ? "🟢" : "🔴";
-            var hasToken = !string.IsNullOrWhiteSpace(g.RefreshToken);
-            var tokenIcon = hasToken ? "🔑" : "⚠️";
+            var connectedCount = g.Channels.Count(c => !string.IsNullOrWhiteSpace(c.RefreshToken));
+            var tokenIcon = connectedCount == g.Channels.Count && g.Channels.Count > 0 ? "🔑" : "⚠️";
 
             lines.Add($"{status} <b>{H(g.Name)}</b> {tokenIcon}");
-            lines.Add($"   📺 {g.Channels.Count} каналів · 📤 {uploadsUsed}/~6 сьогодні");
+            lines.Add($"   📺 {connectedCount}/{g.Channels.Count} підключено · 📤 {uploadsUsed}/~6 сьогодні");
 
             buttons.Add([InlineKeyboardButton.WithCallbackData($"📂 {g.Name}", $"{Prefix}group:{g.Id}")]);
         }
@@ -76,12 +79,12 @@ internal sealed class TelegramChannelManagementHandler(
 
         channelStore.ResetQuotaIfNeeded(groupId);
         var remaining = channelStore.GetRemainingQuota(groupId);
-        var hasToken = !string.IsNullOrWhiteSpace(group.RefreshToken);
+        var connectedCount = group.Channels.Count(c => !string.IsNullOrWhiteSpace(c.RefreshToken));
 
         var lines = new List<string>
         {
             $"📂 <b>{H(group.Name)}</b>\n",
-            $"🔑 OAuth: {(hasToken ? "✅ Підключено" : "⚠️ Не підключено")}",
+            $"🔑 OAuth: {connectedCount}/{group.Channels.Count} каналів підключено",
             $"📊 Квота: <code>{group.QuotaUsedToday:0}/{10000}</code> ({remaining:0} залишилось)",
             $"📺 Каналів: {group.Channels.Count}",
         };
@@ -91,8 +94,9 @@ internal sealed class TelegramChannelManagementHandler(
             lines.Add("");
             foreach (var ch in group.Channels)
             {
+                var tokenStatus = !string.IsNullOrWhiteSpace(ch.RefreshToken) ? "🔑" : "⚠️";
                 var folder = string.IsNullOrWhiteSpace(ch.DriveFolderId) ? "—" : ch.DriveFolderId[..Math.Min(12, ch.DriveFolderId.Length)] + "…";
-                lines.Add($"  • <b>{H(ch.Name)}</b> → 📁 <code>{folder}</code>");
+                lines.Add($"  {tokenStatus} <b>{H(ch.Name)}</b> → 📁 <code>{folder}</code>");
             }
         }
 
@@ -107,7 +111,6 @@ internal sealed class TelegramChannelManagementHandler(
         buttons.Add([InlineKeyboardButton.WithCallbackData("➕ Додати канал", $"{Prefix}add-ch:{groupId}")]);
         buttons.Add([
             InlineKeyboardButton.WithCallbackData("✏️ Назва", $"{Prefix}rename-group:{groupId}"),
-            InlineKeyboardButton.WithCallbackData("🔑 Токен", $"{Prefix}set-token:{groupId}")
         ]);
         buttons.Add([
             InlineKeyboardButton.WithCallbackData("🗑 Видалити групу", $"{Prefix}del-group:{groupId}"),
@@ -134,14 +137,17 @@ internal sealed class TelegramChannelManagementHandler(
 
         var ytId = string.IsNullOrWhiteSpace(channel.YouTubeChannelId) ? "—" : channel.YouTubeChannelId;
         var folder = string.IsNullOrWhiteSpace(channel.DriveFolderId) ? "—" : channel.DriveFolderId;
+        var tokenStatus = !string.IsNullOrWhiteSpace(channel.RefreshToken) ? "✅ Підключено" : "⚠️ Не підключено";
 
         var text = $"📺 <b>{H(channel.Name)}</b>\n\n" +
+                   $"🔑 OAuth: {tokenStatus}\n" +
                    $"🆔 YouTube ID: <code>{H(ytId)}</code>\n" +
                    $"📁 Drive Folder: <code>{H(folder)}</code>\n" +
                    $"📂 Група: {H(group.Name)}";
 
         var buttons = new List<InlineKeyboardButton[]>
         {
+            new[] { InlineKeyboardButton.WithCallbackData("🔑 Підключити OAuth", $"{Prefix}oauth:{groupId}:{channelId}") },
             new[] { InlineKeyboardButton.WithCallbackData("✏️ Назва", $"{Prefix}rename-ch:{groupId}:{channelId}") },
             new[] { InlineKeyboardButton.WithCallbackData("🆔 YouTube ID", $"{Prefix}set-ytid:{groupId}:{channelId}") },
             new[] { InlineKeyboardButton.WithCallbackData("📁 Drive Folder", $"{Prefix}set-folder:{groupId}:{channelId}") },
@@ -205,14 +211,15 @@ internal sealed class TelegramChannelManagementHandler(
             return;
         }
 
-        if (action.StartsWith("set-token:", StringComparison.Ordinal))
+        if (action.StartsWith("oauth:", StringComparison.Ordinal))
         {
-            var groupId = action["set-token:".Length..];
-            _wizards[chatId] = new ChannelWizardSession { Step = WizardStep.EnterRefreshToken, GroupId = groupId };
-            await ui.SendMessageAsync(chatId,
-                "🔑 Введи Refresh Token для цієї групи:\n\n" +
-                "<i>Отримай через OAuth flow (get_token.py) або /skip щоб пропустити</i>",
-                parseMode: ParseMode.Html, ct: ct);
+            var parts = action["oauth:".Length..].Split(':');
+            if (parts.Length == 2)
+            {
+                var groupId = parts[0];
+                var channelId = parts[1];
+                await StartOAuthFlowAsync(chatId, groupId, channelId, ct);
+            }
             return;
         }
 
@@ -277,6 +284,54 @@ internal sealed class TelegramChannelManagementHandler(
         }
     }
 
+    // ── OAuth flow ──
+
+    private async Task StartOAuthFlowAsync(long chatId, string groupId, string channelId, CancellationToken ct)
+    {
+        var group = channelStore.GetGroup(groupId);
+        var channel = group?.Channels.FirstOrDefault(c => c.Id == channelId);
+        if (group is null || channel is null)
+        {
+            await ui.SendMessageAsync(chatId, "❌ Канал не знайдено.", ct: ct);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(group.ClientId) || string.IsNullOrWhiteSpace(group.ClientSecret))
+        {
+            await ui.SendMessageAsync(chatId, "⚠️ Для цієї групи не налаштовано Client ID / Client Secret.", ct: ct);
+            return;
+        }
+
+        var oauthUrl = BuildOAuthUrl(group.ClientId);
+
+        _wizards[chatId] = new ChannelWizardSession
+        {
+            Step = WizardStep.EnterAuthorizationCode,
+            GroupId = groupId,
+            ChannelId = channelId
+        };
+
+        await ui.SendMessageAsync(chatId,
+            $"🔑 <b>Підключення каналу «{H(channel.Name)}»</b>\n\n" +
+            "1️⃣ Скопіюй посилання нижче\n" +
+            "2️⃣ Відкрий його в Dolphin (потрібний профіль з проксі)\n" +
+            "3️⃣ Увійди в Gmail → обери канал → натисни «Дозволити»\n" +
+            "4️⃣ Google покаже код — скопіюй його і відправ сюди\n\n" +
+            $"<code>{H(oauthUrl)}</code>",
+            parseMode: ParseMode.Html, ct: ct);
+    }
+
+    private static string BuildOAuthUrl(string clientId)
+    {
+        return "https://accounts.google.com/o/oauth2/v2/auth" +
+               $"?client_id={Uri.EscapeDataString(clientId)}" +
+               $"&redirect_uri={Uri.EscapeDataString(OAuthRedirectUri)}" +
+               "&response_type=code" +
+               $"&scope={Uri.EscapeDataString(YouTubeUploadScope)}" +
+               "&access_type=offline" +
+               "&prompt=consent";
+    }
+
     // ── Text input handler ──
 
     internal async Task<bool> HandleTextAsync(long chatId, string text, CancellationToken ct)
@@ -299,51 +354,73 @@ internal sealed class TelegramChannelManagementHandler(
                 return true;
 
             case WizardStep.EnterClientSecret:
-                wizard.ClientSecret = text.Trim();
-                wizard.Step = WizardStep.EnterRefreshToken;
-                await ui.SendMessageAsync(chatId,
-                    "🔑 Введи Refresh Token:\n\n<i>/skip щоб додати пізніше</i>",
-                    parseMode: ParseMode.Html, ct: ct);
-                return true;
-
-            case WizardStep.EnterRefreshToken:
             {
-                var token = text.Trim();
-                var isSkip = token.Equals("/skip", StringComparison.OrdinalIgnoreCase);
+                wizard.ClientSecret = text.Trim();
 
-                if (wizard.GroupId is not null)
-                {
-                    // Updating existing group token
-                    var group = channelStore.GetGroup(wizard.GroupId);
-                    if (group is not null && !isSkip)
-                    {
-                        group.RefreshToken = token;
-                        channelStore.UpdateGroup(group);
-                        await ui.SendMessageAsync(chatId, "✅ Токен оновлено!", ct: ct);
-                    }
-                    _wizards.Remove(chatId);
-                    if (group is not null)
-                        await ShowGroupDetailAsync(chatId, group.Id, ct);
-                    else
-                        await ShowMainMenuAsync(chatId, ct);
-                    return true;
-                }
-
-                // Creating new group
+                // Create group immediately (no more RefreshToken step for group)
                 var newGroup = new GmailGroup
                 {
                     Id = Guid.NewGuid().ToString("N")[..12],
                     Name = wizard.GroupName ?? "Unnamed",
                     ClientId = wizard.ClientId ?? "",
-                    ClientSecret = wizard.ClientSecret ?? "",
-                    RefreshToken = isSkip ? null : token,
+                    ClientSecret = wizard.ClientSecret,
                     QuotaResetAtUtc = DateTimeOffset.UtcNow,
                     CreatedAtUtc = DateTimeOffset.UtcNow
                 };
                 channelStore.AddGroup(newGroup);
                 _wizards.Remove(chatId);
-                await ui.SendMessageAsync(chatId, $"✅ Групу <b>{H(newGroup.Name)}</b> створено!", parseMode: ParseMode.Html, ct: ct);
+                await ui.SendMessageAsync(chatId,
+                    $"✅ Групу <b>{H(newGroup.Name)}</b> створено!\n\n" +
+                    "Тепер додай канали і підключи OAuth для кожного.",
+                    parseMode: ParseMode.Html, ct: ct);
                 await ShowGroupDetailAsync(chatId, newGroup.Id, ct);
+                return true;
+            }
+
+            case WizardStep.EnterAuthorizationCode:
+            {
+                var code = text.Trim();
+                if (string.IsNullOrWhiteSpace(code))
+                {
+                    await ui.SendMessageAsync(chatId, "⚠️ Код не може бути порожнім. Спробуй ще раз:", ct: ct);
+                    return true;
+                }
+
+                var group = channelStore.GetGroup(wizard.GroupId!);
+                var channel = group?.Channels.FirstOrDefault(c => c.Id == wizard.ChannelId);
+                if (group is null || channel is null)
+                {
+                    await ui.SendMessageAsync(chatId, "❌ Канал не знайдено.", ct: ct);
+                    _wizards.Remove(chatId);
+                    return true;
+                }
+
+                await ui.SendMessageAsync(chatId, "⏳ Обмінюю код на токен...", ct: ct);
+
+                try
+                {
+                    var refreshToken = await oAuthCodeExchanger.ExchangeCodeAsync(
+                        code, group.ClientId, group.ClientSecret, OAuthRedirectUri, ct);
+
+                    channel.RefreshToken = refreshToken;
+                    channelStore.UpdateChannel(group.Id, channel);
+
+                    logger.LogInformation("OAuth token saved for channel {ChannelName} in group {GroupName}",
+                        channel.Name, group.Name);
+
+                    _wizards.Remove(chatId);
+                    await ui.SendMessageAsync(chatId,
+                        $"✅ Канал <b>{H(channel.Name)}</b> підключено!",
+                        parseMode: ParseMode.Html, ct: ct);
+                    await ShowChannelEditAsync(chatId, group.Id, channel.Id, ct);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "OAuth code exchange failed for channel {ChannelId}", wizard.ChannelId);
+                    await ui.SendMessageAsync(chatId,
+                        $"❌ Помилка обміну коду: <code>{H(ex.Message)}</code>\n\nСпробуй ще раз — скопіюй новий код:",
+                        parseMode: ParseMode.Html, ct: ct);
+                }
                 return true;
             }
 
@@ -433,7 +510,7 @@ internal sealed class TelegramChannelManagementHandler(
         EnterGroupName,
         EnterClientId,
         EnterClientSecret,
-        EnterRefreshToken,
+        EnterAuthorizationCode,
         EnterChannelName,
         RenameGroup,
         RenameChannel,
