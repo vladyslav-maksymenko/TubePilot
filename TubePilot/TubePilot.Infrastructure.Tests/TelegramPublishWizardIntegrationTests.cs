@@ -335,6 +335,7 @@ public sealed class TelegramPublishWizardIntegrationTests
         var channelHandler = new TelegramChannelManagementHandler(
             uiClient,
             new FakeChannelStore(),
+            new FakeOAuthCodeExchanger(),
             NullLogger<TelegramChannelManagementHandler>.Instance);
 
         return new TelegramBotService(
@@ -452,6 +453,17 @@ public sealed class TelegramPublishWizardIntegrationTests
         {
             AnswerCallbackQueryCalls.Add(new AnswerCallbackQueryCall(callbackQueryId, text, showAlert));
             return Task.CompletedTask;
+        }
+
+        public Task<int> SendMessageWithReplyKeyboardAsync(
+            long chatId,
+            string text,
+            ReplyKeyboardMarkup replyKeyboard,
+            ParseMode? parseMode = null,
+            CancellationToken ct = default)
+        {
+            SendMessageCalls.Add(new SendMessageCall(chatId, text, parseMode, null, null));
+            return Task.FromResult(Interlocked.Increment(ref _messageIdCounter));
         }
 
         public sealed record SendMessageCall(long ChatId, string Text, ParseMode? ParseMode, int? ReplyToMessageId, InlineKeyboardMarkup? ReplyMarkup);
@@ -660,5 +672,11 @@ public sealed class TelegramPublishWizardIntegrationTests
         public void RecordQuotaUsage(string groupId, double units) { }
         public void ResetQuotaIfNeeded(string groupId) { }
         public double GetRemainingQuota(string groupId) => 10000;
+    }
+
+    private sealed class FakeOAuthCodeExchanger : IOAuthCodeExchanger
+    {
+        public Task<string> ExchangeCodeAsync(string code, string clientId, string clientSecret, string redirectUri, CancellationToken ct)
+            => Task.FromResult("fake-refresh-token");
     }
 }
