@@ -920,31 +920,25 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
             case PublishWizardStep.WaitingForPickDate:
             {
-                // Manual date input: DD.MM or DD.MM.YYYY
                 var input = text.Trim();
                 var tz = PublishingScheduleHelper.ResolveTimeZone(_publishingOptions.CurrentValue.TimeZoneId);
                 var nowLocal = TimeZoneInfo.ConvertTime(_timeProvider.GetUtcNow(), tz);
 
-                DateTime parsedDate;
-                if (DateTime.TryParseExact(input, ["dd.MM", "dd.MM.yyyy", "d.M", "d.M.yyyy"],
-                        System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out parsedDate))
+                if (!DateTime.TryParseExact(input, ["dd.MM.yyyy", "d.M.yyyy"],
+                        System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var parsedDate))
                 {
-                    if (parsedDate.Year == 1) // dd.MM without year
-                        parsedDate = new DateTime(nowLocal.Year, parsedDate.Month, parsedDate.Day);
-
-                    if (parsedDate.Date < nowLocal.Date)
-                    {
-                        await _ui.SendMessageAsync(session.ChatId, "⚠️ Дата в минулому. Введи майбутню дату або обери кнопкою:", replyToMessageId: session.ReplyToMessageId, ct: ct);
-                        return;
-                    }
-
-                    session.PickedLocalDate = parsedDate.Date;
-                    await SendPickTimePromptAsync(session, ct);
+                    await _ui.SendMessageAsync(session.ChatId, "⚠️ Невірний формат. Введи дату як ДД.ММ.РРРР (наприклад 25.04.2026):", replyToMessageId: session.ReplyToMessageId, ct: ct);
+                    return;
                 }
-                else
+
+                if (parsedDate.Date < nowLocal.Date)
                 {
-                    await _ui.SendMessageAsync(session.ChatId, "⚠️ Невірний формат. Введи дату як ДД.ММ або ДД.ММ.РРРР, або обери кнопкою:", replyToMessageId: session.ReplyToMessageId, ct: ct);
+                    await _ui.SendMessageAsync(session.ChatId, "⚠️ Дата в минулому. Введи майбутню дату:", replyToMessageId: session.ReplyToMessageId, ct: ct);
+                    return;
                 }
+
+                session.PickedLocalDate = parsedDate.Date;
+                await SendPickTimePromptAsync(session, ct);
                 return;
             }
 
@@ -1183,7 +1177,7 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
 
         await _ui.SendMessageAsync(
             session.ChatId,
-            "📅 Обери дату публікації або введи вручну (ДД.ММ):",
+            "📅 Обери дату публікації або введи вручну (ДД.ММ.РРРР):",
             replyToMessageId: session.ReplyToMessageId,
             replyMarkup: new InlineKeyboardMarkup(rows),
             ct: ct);
