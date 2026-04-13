@@ -19,15 +19,32 @@ internal sealed class TelegramChannelManagementHandler(
     private const string YouTubeUploadScope = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly";
     private const string OAuthRedirectUri = "urn:ietf:wg:oauth:2.0:oob";
 
+    private static readonly ReplyKeyboardMarkup DefaultKeyboard = new(
+    [
+        [new KeyboardButton("📋 Мої групи каналів"), new KeyboardButton("➕ Додати групу")],
+        [new KeyboardButton("❓ Допомога")]
+    ])
+    {
+        ResizeKeyboard = true,
+        IsPersistent = true
+    };
+
     // Wizard sessions per chat
     private readonly Dictionary<long, ChannelWizardSession> _wizards = [];
 
+    // Track which group the user is currently viewing (for contextual reply keyboard)
+    private readonly Dictionary<long, string> _lastViewedGroupId = [];
+
     internal bool HasActiveWizard(long chatId) => _wizards.ContainsKey(chatId);
+    internal string? GetLastViewedGroupId(long chatId) => _lastViewedGroupId.GetValueOrDefault(chatId);
 
     // ── Main menu ──
 
     internal async Task ShowMainMenuAsync(long chatId, CancellationToken ct)
     {
+        _lastViewedGroupId.Remove(chatId);
+        await ui.SendMessageWithReplyKeyboardAsync(chatId, "🏠 Головне меню", DefaultKeyboard, ct: ct);
+
         var groups = channelStore.GetAllGroups();
         if (groups.Count == 0)
         {
@@ -76,6 +93,18 @@ internal sealed class TelegramChannelManagementHandler(
             await ui.SendMessageAsync(chatId, "❌ Групу не знайдено.", ct: ct);
             return;
         }
+
+        _lastViewedGroupId[chatId] = groupId;
+        var groupKeyboard = new ReplyKeyboardMarkup(
+        [
+            [new KeyboardButton("📋 Мої групи каналів"), new KeyboardButton("➕ Додати канал")],
+            [new KeyboardButton("❓ Допомога")]
+        ])
+        {
+            ResizeKeyboard = true,
+            IsPersistent = true
+        };
+        await ui.SendMessageWithReplyKeyboardAsync(chatId, $"📂 Група: {group.Name}", groupKeyboard, ct: ct);
 
         channelStore.ResetQuotaIfNeeded(groupId);
         var remaining = channelStore.GetRemainingQuota(groupId);
@@ -260,18 +289,55 @@ internal sealed class TelegramChannelManagementHandler(
         {
             var groupId = action["del-group:".Length..];
             var group = channelStore.GetGroup(groupId);
-            if (group is not null)
+            if (group is null)
             {
-                channelStore.RemoveGroup(groupId);
-                await ui.SendMessageAsync(chatId, $"🗑 Групу <b>{H(group.Name)}</b> видалено.", parseMode: ParseMode.Html, ct: ct);
+                await ShowMainMenuAsync(chatId, ct);
+                return;
             }
-            await ShowMainMenuAsync(chatId, ct);
+
+            var channelCount = group.Channels.Count;
+            _wizards[chatId] = new ChannelWizardSession { Step = WizardStep.ConfirmDeleteGroup, GroupId = groupId };
+
+            await ui.SendMessageAsync(chatId,
+                $"⚠️ <b>Видалити групу «{H(group.Name)}»?</b>\n\n" +
+                $"В групі {channelCount} канал(ів).\n" +
+                "Після видалення дані будуть втрачені безповоротно.\n\n" +
+                "Напиши <code>Так, я хочу видалити</code> щоб підтвердити або /cancel щоб скасувати.",
+                parseMode: ParseMode.Html, ct: ct);
             return;
         }
 
         if (action.StartsWith("del-ch:", StringComparison.Ordinal))
         {
             var parts = action["del-ch:".Length..].Split(':');
+            if (parts.Length != 2) return;
+
+            var groupId = parts[0];
+            var channelId = parts[1];
+            var ch = channelStore.GetChannel(channelId);
+            if (ch is null)
+            {
+                await ShowGroupDetailAsync(chatId, groupId, ct);
+                return;
+            }
+
+            var text = $"⚠️ <b>Видалити канал «{H(ch.Name)}»?</b>\n\n" +
+                       "Після видалення дані будуть втрачені безповоротно.";
+
+            var buttons = new InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton.WithCallbackData("✅ Так, видалити", $"{Prefix}confirm-del-ch:{groupId}:{channelId}"),
+                    InlineKeyboardButton.WithCallbackData("❌ Скасувати", $"{Prefix}edit-ch:{groupId}:{channelId}")
+                ]
+            ]);
+
+            await ui.SendMessageAsync(chatId, text, parseMode: ParseMode.Html, replyMarkup: buttons, ct: ct);
+            return;
+        }
+
+        if (action.StartsWith("confirm-del-ch:", StringComparison.Ordinal))
+        {
+            var parts = action["confirm-del-ch:".Length..].Split(':');
             if (parts.Length == 2)
             {
                 var ch = channelStore.GetChannel(parts[1]);
@@ -495,6 +561,28 @@ internal sealed class TelegramChannelManagementHandler(
                 return true;
             }
 
+            case WizardStep.ConfirmDeleteGroup:
+            {
+                if (text.Trim().Equals("Так, я хочу видалити", StringComparison.OrdinalIgnoreCase))
+                {
+                    var group = channelStore.GetGroup(wizard.GroupId!);
+                    if (group is not null)
+                    {
+                        channelStore.RemoveGroup(wizard.GroupId!);
+                        await ui.SendMessageAsync(chatId, $"🗑 Групу <b>{H(group.Name)}</b> видалено.", parseMode: ParseMode.Html, ct: ct);
+                    }
+                    _wizards.Remove(chatId);
+                    await ShowMainMenuAsync(chatId, ct);
+                }
+                else
+                {
+                    _wizards.Remove(chatId);
+                    await ui.SendMessageAsync(chatId, "❌ Видалення скасовано.", ct: ct);
+                    await ShowGroupDetailAsync(chatId, wizard.GroupId!, ct);
+                }
+                return true;
+            }
+
             default:
                 _wizards.Remove(chatId);
                 return false;
@@ -512,6 +600,7 @@ internal sealed class TelegramChannelManagementHandler(
         EnterClientSecret,
         EnterAuthorizationCode,
         EnterChannelName,
+        ConfirmDeleteGroup,
         RenameGroup,
         RenameChannel,
         SetYouTubeId,

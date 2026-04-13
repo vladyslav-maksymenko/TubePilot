@@ -279,6 +279,20 @@ internal sealed class TelegramBotService : BackgroundService, ITelegramBotServic
             return;
         }
 
+        if (text == "➕ Додати канал")
+        {
+            var groupId = _channelHandler.GetLastViewedGroupId(chatId);
+            if (groupId is not null)
+            {
+                await _channelHandler.HandleCallbackAsync(chatId, $"add-ch:{groupId}", ct);
+            }
+            else
+            {
+                await _ui.SendMessageAsync(chatId, "⚠️ Спочатку відкрий групу через 📋 Мої групи каналів.", ct: ct);
+            }
+            return;
+        }
+
         if (text.Equals("/help", StringComparison.OrdinalIgnoreCase) || text == "❓ Допомога")
         {
             await SendHelpAsync(chatId, ct);
